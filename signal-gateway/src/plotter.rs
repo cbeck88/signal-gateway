@@ -8,7 +8,7 @@ use prom_client::{
 };
 use rand::RngCore;
 use reqwest::Client as ReqwestClient;
-use rust_decimal::Decimal;
+use prom_client::MetricVal;
 use std::{error::Error, str::FromStr, time::Duration};
 use tracing::{info, warn};
 use walkdir::WalkDir;
@@ -162,7 +162,7 @@ impl Plotter {
     pub async fn oneoff_query(
         &self,
         query: String,
-    ) -> Result<(ExtractLabels, Vec<Option<(f64, Decimal)>>), Box<dyn Error>> {
+    ) -> Result<(ExtractLabels, Vec<Option<(f64, MetricVal)>>), Box<dyn Error>> {
         info!("Prom query: {query}");
         let vector: Vec<MetricValue> = QueryRequest { query, time: None }
             .send_with_client(&self.reqwest_client, &self.config.prometheus_host)

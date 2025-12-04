@@ -26,10 +26,37 @@
 
 use crate::Error;
 use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
-use serde::{Deserialize, de::DeserializeOwned};
-use std::{collections::HashMap, fmt::Debug};
+use serde::{Deserialize, Deserializer, de::DeserializeOwned};
+use std::{collections::HashMap, fmt::{self, Debug, Display}};
 use tracing::warn;
+
+/// Wrapper for f64 that deserializes from a string (prometheus returns numeric values as strings)
+#[derive(Clone, Copy, Debug)]
+pub struct MetricVal(pub f64);
+
+impl Display for MetricVal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        Display::fmt(&self.0, f)
+    }
+}
+
+impl AsRef<f64> for MetricVal {
+    fn as_ref(&self) -> &f64 {
+        &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for MetricVal {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <&str>::deserialize(deserializer)?;
+        s.parse::<f64>()
+            .map(MetricVal)
+            .map_err(serde::de::Error::custom)
+    }
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(bound = "KV: DeserializeOwned")]
@@ -39,7 +66,7 @@ where
 {
     pub metric: KV,
     #[serde(default)]
-    pub value: Option<(f64, Decimal)>,
+    pub value: Option<(f64, MetricVal)>,
     // TODO: Include histograms
 }
 
@@ -51,7 +78,7 @@ where
 {
     pub metric: KV,
     #[serde(default)]
-    pub values: Vec<(f64, Decimal)>,
+    pub values: Vec<(f64, MetricVal)>,
     // TODO: Include histograms
 }
 

@@ -29,7 +29,7 @@ pub use labels::{ExtractLabels, Labels};
 mod messages;
 use messages::PromResponse;
 pub use messages::{
-    AlertInfo, AlertStatus, AlertsResponse, MetricTimeseries, MetricValue, PromData,
+    AlertInfo, AlertStatus, AlertsResponse, MetricTimeseries, MetricVal, MetricValue, PromData,
 };
 
 #[cfg(feature = "plot")]

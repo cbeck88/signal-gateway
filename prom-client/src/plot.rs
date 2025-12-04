@@ -1,7 +1,6 @@
 use crate::{ExtractLabels, MetricTimeseries};
 use chrono::{DateTime, FixedOffset, TimeZone, Utc};
 use plotters::prelude::*;
-use rust_decimal::prelude::ToPrimitive;
 use std::{
     borrow::Borrow,
     error::Error,
@@ -235,7 +234,7 @@ impl PreparedPlot {
                     .iter()
                     .filter_map(|(k, v)| {
                         let x = f64_to_datetime(k)?;
-                        let y = v.to_f64()?;
+                        let y = *v.as_ref();
                         extend_range(&mut x_range, &x);
                         extend_range(&mut y_range, &y);
 
