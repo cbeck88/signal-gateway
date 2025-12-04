@@ -1,0 +1,60 @@
+//! This copied from https://github.com/AsamK/signal-cli/blob/f9a36c6e0404d06bd396b24b5ea699e49ed29b89/client/src/jsonrpc.rs
+
+use futures_util::{Sink, SinkExt, Stream, stream::StreamExt};
+use jsonrpsee::core::client::{ReceivedMessage, TransportReceiverT, TransportSenderT};
+use thiserror::Error;
+
+mod stream_codec;
+pub mod tcp;
+
+#[derive(Debug, Error)]
+enum Errors {
+    #[error("Other: {0}")]
+    Other(String),
+    #[error("Closed")]
+    Closed,
+}
+
+struct Sender<T: Send + Sink<String>> {
+    inner: T,
+}
+
+impl<T: Send + Sink<String, Error = impl std::error::Error> + Unpin + 'static> TransportSenderT
+    for Sender<T>
+{
+    type Error = Errors;
+
+    async fn send(&mut self, body: String) -> Result<(), Self::Error> {
+        self.inner
+            .send(body)
+            .await
+            .map_err(|e| Errors::Other(format!("{e:?}")))?;
+        Ok(())
+    }
+
+    async fn close(&mut self) -> Result<(), Self::Error> {
+        self.inner
+            .close()
+            .await
+            .map_err(|e| Errors::Other(format!("{e:?}")))?;
+        Ok(())
+    }
+}
+
+struct Receiver<T: Send + Stream> {
+    inner: T,
+}
+
+impl<T: Send + Stream<Item = Result<String, std::io::Error>> + Unpin + 'static> TransportReceiverT
+    for Receiver<T>
+{
+    type Error = Errors;
+
+    async fn receive(&mut self) -> Result<ReceivedMessage, Self::Error> {
+        match self.inner.next().await {
+            None => Err(Errors::Closed),
+            Some(Ok(msg)) => Ok(ReceivedMessage::Text(msg)),
+            Some(Err(e)) => Err(Errors::Other(format!("{e:?}"))),
+        }
+    }
+}

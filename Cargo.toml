@@ -1,0 +1,53 @@
+[workspace]
+resolver = "2"
+members = [
+    "prom-client",
+    "signal-gateway",
+]
+
+[workspace.package]
+edition = "2024"
+
+[profile.release]
+# line-tables-only: keeps file/line info for backtraces, but strips variable/type debug info
+# This significantly reduces binary size while preserving useful stack traces
+debug = "line-tables-only"
+# LTO eliminates dead code across crates, reducing binary size esp. for the AWS crates
+# "thin" is faster than "fat" LTO while still providing most benefits
+lto = "thin"
+
+[workspace.lints.clippy]
+assigning_clones = "allow"
+result_large_err = "allow"
+
+[workspace.dependencies]
+prom-client = { path = "prom-client" }
+
+async-trait = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+circular-buffer = "1.2"
+conf = "0.4"
+conf-extra = "0.1"
+displaydoc = "0.2"
+dotenvy = "0.15"
+futures-util = "0.3"
+http-body-util = "0.1"
+humantime = "2"
+hyper = { version = "1.7", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto"] }
+jsonrpsee = { version = "0.26", features = ["macros", "async-client"] }
+plotters = { version = "0.3", default-features = false, features = ["bitmap_backend", "bitmap_encoder", "ttf", "datetime", "area_series", "line_series", "full_palette"] }
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rust_decimal = { version = "1", features = ["serde-with-str"] }
+rustls = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+syslog_rfc5424 = "0.10"
+thiserror = "2"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["codec"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+url = "2"
+walkdir = "2"
