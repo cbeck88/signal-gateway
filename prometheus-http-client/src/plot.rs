@@ -39,6 +39,8 @@ pub struct PlotStyle {
     pub utc_offset_hours: i32,
     /// Optional title override - used when prometheus aggregations remove __name__
     pub title: Option<String>,
+    /// The stroke width for data lines (default: 1)
+    pub line_width: u32,
 }
 
 impl Default for PlotStyle {
@@ -69,6 +71,7 @@ impl Default for PlotStyle {
             skip_labels: vec!["job".into(), "instance".into()],
             utc_offset_hours: 0,
             title: None,
+            line_width: 1,
         }
     }
 }
@@ -89,6 +92,12 @@ impl PlotStyle {
     /// Set the UTC offset (timezone) used in the plot, in hours
     pub fn with_utc_offset(mut self, offset: i32) -> Self {
         self.utc_offset_hours = offset;
+        self
+    }
+
+    /// Set the stroke width for data lines
+    pub fn with_line_width(mut self, width: u32) -> Self {
+        self.line_width = width;
         self
     }
 }
@@ -214,15 +223,16 @@ impl PlotStyle {
         for (idx, (mut metric, vals)) in specific_labels.into_iter().zip(ts.into_iter()).enumerate()
         {
             let color = &self.data_colors[idx % self.data_colors.len()];
+            let style = ShapeStyle::from(color).stroke_width(self.line_width);
 
             let name = metric.remove("__name__").unwrap_or_default();
             let label = format!("{name} {metric:?}");
 
-            let series = ctx.draw_series(LineSeries::new(vals, color))?;
+            let series = ctx.draw_series(LineSeries::new(vals, style))?;
             if show_legend {
                 series
                     .label(label)
-                    .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], color));
+                    .legend(move |(x, y)| PathElement::new(vec![(x, y), (x + 20, y)], style));
             }
         }
 

@@ -1,6 +1,6 @@
 #![deny(missing_docs)]
 
-//! Minimal API for getting time series data from prometheus
+//! Minimal API for getting time series data from prometheus, and making small plots.
 //!
 //! To use it, instantiate one of the request objects,
 //! e.g. QueryRequest or QueryRangeRequest. When it's helpful a builder is provided.
@@ -16,7 +16,7 @@
 //! `serde::Deserialize` in the `PromData` that results from the call.
 //!
 //! When `plot` feature is active, the plot module can be used to plot the timeseries data.
-//! This is mostly intended to be used as previews in alert messages.
+//! This was designed to be used to generate previews in alert messages.
 
 use chrono::{DateTime, Utc};
 use serde::{Serialize, de::DeserializeOwned};
