@@ -8,10 +8,10 @@ use signal_gateway::{Gateway, Level, LogMessage};
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
 use syslog_rfc5424::{SyslogMessage, SyslogSeverity};
 use tokio::{
-    io::{AsyncReadExt, BufReader},
+    io::{AsyncRead, AsyncReadExt, BufReader},
     net::{TcpListener, TcpStream, UdpSocket},
 };
-use tracing::{error, info};
+use tracing::{error, info, trace};
 
 /// Configuration for the syslog listener (supports both UDP and TCP).
 #[derive(Clone, Conf, Debug)]
@@ -101,7 +101,7 @@ impl SyslogConfig {
                     continue;
                 };
 
-                info!("Accepted syslog TCP connection from {addr}");
+                trace!("Accepted syslog TCP connection from {addr}");
 
                 let gateway = gateway.clone();
                 let config = config.clone();
@@ -110,8 +110,9 @@ impl SyslogConfig {
                 tokio::spawn(async move {
                     if let Err(err) = handle_tcp_connection(stream, &gateway, &config).await {
                         error!("Syslog TCP connection from {addr} error: {err}");
+                    } else {
+                        trace!("Syslog TCP connection from {addr} closed");
                     }
-                    info!("Syslog TCP connection from {addr} closed");
                 });
             }
         }))
@@ -127,32 +128,8 @@ async fn handle_tcp_connection(
     let mut reader = BufReader::new(stream);
 
     loop {
-        // Read first byte to determine framing method
-        let first_byte = match reader.read_u8().await {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()), // Clean EOF
-            Err(e) => return Err(e),
-        };
-
-        let msg_bytes = match first_byte {
-            // Whitespace: skip and continue
-            b' ' | b'\t' | b'\n' | b'\r' => continue,
-
-            // Octet counting: starts with non-zero digit
-            b'1'..=b'9' => read_octet_counted_message(&mut reader, first_byte).await?,
-
-            // Non-transparent framing: starts with '<' (beginning of syslog PRI)
-            b'<' => read_non_transparent_message(&mut reader, first_byte, config).await?,
-
-            // Invalid first byte
-            _ => {
-                error!(
-                    "Syslog TCP: invalid first byte 0x{:02x} ({:?}), closing connection",
-                    first_byte,
-                    char::from(first_byte)
-                );
-                return Ok(());
-            }
+        let Some(msg_bytes) = read_framed_syslog_bytes(&mut reader, config.tcp_cr_is_delimiter).await? else {
+            return Ok(()); // Clean EOF
         };
 
         // Parse and process the message
@@ -173,12 +150,68 @@ async fn handle_tcp_connection(
     }
 }
 
+/// Read a single framed syslog message using RFC 6587 framing detection.
+///
+/// Returns:
+/// - `Ok(Some(bytes))` - A complete message was read
+/// - `Ok(None)` - EOF reached (no more messages)
+/// - `Err(InvalidData)` - Invalid framing (e.g., unexpected first byte)
+/// - `Err(other)` - I/O error
+async fn read_framed_syslog_bytes<R>(
+    reader: &mut BufReader<R>,
+    cr_is_delimiter: bool,
+) -> std::io::Result<Option<Vec<u8>>>
+where
+    R: AsyncRead + Unpin,
+{
+    loop {
+        // Read first byte to determine framing method
+        let first_byte = match reader.read_u8().await {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(e),
+        };
+
+        match first_byte {
+            // Whitespace: skip and continue
+            b' ' | b'\t' | b'\n' | b'\r' => continue,
+
+            // Octet counting: starts with non-zero digit
+            b'1'..=b'9' => {
+                return read_octet_counted_message(reader, first_byte).await.map(Some)
+            }
+
+            // Non-transparent framing: starts with '<' (beginning of syslog PRI)
+            b'<' => {
+                return read_non_transparent_message(reader, first_byte, cr_is_delimiter)
+                    .await
+                    .map(Some)
+            }
+
+            // Invalid first byte
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!(
+                        "invalid first byte 0x{:02x} ({:?})",
+                        first_byte,
+                        char::from(first_byte)
+                    ),
+                ))
+            }
+        }
+    }
+}
+
 /// Read an octet-counted message (RFC 6587 section 3.4.1).
 /// Format: MSG-LEN SP SYSLOG-MSG
-async fn read_octet_counted_message(
-    reader: &mut BufReader<TcpStream>,
+async fn read_octet_counted_message<R>(
+    reader: &mut BufReader<R>,
     first_digit: u8,
-) -> std::io::Result<Vec<u8>> {
+) -> std::io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
     let mut len: usize = (first_digit - b'0') as usize;
 
     // Read remaining digits until space
@@ -211,28 +244,34 @@ async fn read_octet_counted_message(
 
 /// Read a non-transparent framed message (RFC 6587 section 3.4.2).
 /// Delimiter is NUL or LF by default, or NUL or CR if `tcp_cr_is_delimiter` is set.
-async fn read_non_transparent_message(
-    reader: &mut BufReader<TcpStream>,
+/// Returns the message buffer on EOF (connection closed) as well as on delimiter.
+async fn read_non_transparent_message<R>(
+    reader: &mut BufReader<R>,
     first_byte: u8,
-    config: &SyslogConfig,
-) -> std::io::Result<Vec<u8>> {
-    let mut buf = vec![first_byte];
+    cr_is_delimiter: bool,
+) -> std::io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let mut msg = vec![first_byte];
 
-    let line_delimiter = if config.tcp_cr_is_delimiter {
-        b'\r'
-    } else {
-        b'\n'
-    };
+    let line_delimiter = if cr_is_delimiter { b'\r' } else { b'\n' };
 
     loop {
-        let b = reader.read_u8().await?;
+        let b = match reader.read_u8().await {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break, // EOF
+            Err(e) => return Err(e),
+        };
+
         if b == b'\0' || b == line_delimiter {
             break;
         }
-        buf.push(b);
+
+        msg.push(b);
     }
 
-    Ok(buf)
+    Ok(msg)
 }
 
 /// Convert SyslogSeverity to our Level enum
@@ -301,5 +340,136 @@ mod tests {
             "<12>1 2025-11-08T02:24:10.815+00:00 ip-172-31-5-8 app 92748 - - Dropped 3/4 reports due to staleness"
         )
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_framing_eof_returns_none() {
+        let data: &[u8] = b"";
+        let mut reader = BufReader::new(data);
+        let result = read_framed_syslog_bytes(&mut reader, false).await.unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_framing_octet_counting() {
+        let data: &[u8] = b"5 hello";
+        let mut reader = BufReader::new(data);
+        let result = read_framed_syslog_bytes(&mut reader, false).await.unwrap();
+        assert_eq!(result, Some(b"hello".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_framing_octet_counting_multidigit_length() {
+        let msg = "a]".repeat(50); // 100 bytes
+        let data = format!("100 {msg}");
+        let mut reader = BufReader::new(data.as_bytes());
+        let result = read_framed_syslog_bytes(&mut reader, false).await.unwrap();
+        assert_eq!(result, Some(msg.as_bytes().to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_framing_non_transparent_lf_delimiter() {
+        let data: &[u8] = b"<14>1 test message\n";
+        let mut reader = BufReader::new(data);
+        let result = read_framed_syslog_bytes(&mut reader, false).await.unwrap();
+        assert_eq!(result, Some(b"<14>1 test message".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_framing_non_transparent_nul_delimiter() {
+        let data: &[u8] = b"<14>1 test message\0";
+        let mut reader = BufReader::new(data);
+        let result = read_framed_syslog_bytes(&mut reader, false).await.unwrap();
+        assert_eq!(result, Some(b"<14>1 test message".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_framing_non_transparent_cr_delimiter() {
+        let data: &[u8] = b"<14>1 test message\r";
+        let mut reader = BufReader::new(data);
+        // With cr_is_delimiter=true, CR is a delimiter
+        let result = read_framed_syslog_bytes(&mut reader, true).await.unwrap();
+        assert_eq!(result, Some(b"<14>1 test message".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_framing_non_transparent_cr_not_delimiter_by_default() {
+        let data: &[u8] = b"<14>1 test\rmessage\n";
+        let mut reader = BufReader::new(data);
+        // With cr_is_delimiter=false, CR is part of the message
+        let result = read_framed_syslog_bytes(&mut reader, false).await.unwrap();
+        assert_eq!(result, Some(b"<14>1 test\rmessage".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_framing_non_transparent_eof_returns_buffer() {
+        // No delimiter, just EOF - should return the accumulated buffer
+        let data: &[u8] = b"<14>1 test message";
+        let mut reader = BufReader::new(data);
+        let result = read_framed_syslog_bytes(&mut reader, false).await.unwrap();
+        assert_eq!(result, Some(b"<14>1 test message".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_framing_whitespace_skipping() {
+        let data: &[u8] = b"  \n\t\r5 hello";
+        let mut reader = BufReader::new(data);
+        let result = read_framed_syslog_bytes(&mut reader, false).await.unwrap();
+        assert_eq!(result, Some(b"hello".to_vec()));
+    }
+
+    #[tokio::test]
+    async fn test_framing_whitespace_only_then_eof() {
+        let data: &[u8] = b"  \n\t\r";
+        let mut reader = BufReader::new(data);
+        let result = read_framed_syslog_bytes(&mut reader, false).await.unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[tokio::test]
+    async fn test_framing_invalid_first_byte() {
+        let data: &[u8] = b"xyz";
+        let mut reader = BufReader::new(data);
+        let result = read_framed_syslog_bytes(&mut reader, false).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn test_framing_zero_not_valid_start() {
+        // '0' is not a valid start for octet counting (must be 1-9)
+        let data: &[u8] = b"0 hello";
+        let mut reader = BufReader::new(data);
+        let result = read_framed_syslog_bytes(&mut reader, false).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn test_framing_multiple_messages() {
+        let data: &[u8] = b"5 hello<14>1 world\n3 foo";
+        let mut reader = BufReader::new(data);
+
+        let r1 = read_framed_syslog_bytes(&mut reader, false).await.unwrap();
+        assert_eq!(r1, Some(b"hello".to_vec()));
+
+        let r2 = read_framed_syslog_bytes(&mut reader, false).await.unwrap();
+        assert_eq!(r2, Some(b"<14>1 world".to_vec()));
+
+        let r3 = read_framed_syslog_bytes(&mut reader, false).await.unwrap();
+        assert_eq!(r3, Some(b"foo".to_vec()));
+
+        let r4 = read_framed_syslog_bytes(&mut reader, false).await.unwrap();
+        assert_eq!(r4, None);
+    }
+
+    #[tokio::test]
+    async fn test_framing_octet_counting_invalid_separator() {
+        // After digits, we expect a space, not another character
+        let data: &[u8] = b"5xhello";
+        let mut reader = BufReader::new(data);
+        let result = read_framed_syslog_bytes(&mut reader, false).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
     }
 }
