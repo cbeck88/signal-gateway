@@ -1,3 +1,5 @@
+//! Gateway for bridging alerts and logs with Signal messenger.
+
 #[cfg(unix)]
 use crate::jsonrpc::connect_ipc;
 use crate::{
@@ -38,28 +40,32 @@ use log_handler::{LogHandler, LogHandlerConfig};
 mod rate_limiter;
 use rate_limiter::{MultiRateLimiter, RateThreshold, SourceLocationRateLimiter};
 
+/// Configuration for the gateway.
 #[derive(Conf, Debug)]
 #[cfg_attr(unix, conf(one_of_fields(signal_cli_tcp_addr, signal_cli_socket_path)))]
 #[cfg_attr(not(unix), conf(one_of_fields(signal_cli_tcp_addr)))]
 pub struct GatewayConfig {
-    /// TCP address of signal-cli JSON-RPC server
+    /// TCP address of signal-cli JSON-RPC server.
     #[conf(long, env)]
     pub signal_cli_tcp_addr: Option<SocketAddr>,
-    /// Unix socket path of signal-cli JSON-RPC server
+    /// Unix socket path of signal-cli JSON-RPC server.
     #[cfg(unix)]
     #[conf(long, env)]
     pub signal_cli_socket_path: Option<PathBuf>,
+    /// The phone number or UUID of the Signal account to use.
     #[conf(long, env)]
     pub signal_account: String,
     /// Admin UUIDs mapped to their safety numbers (can be empty).
-    /// Example: {"uuid1": ["12345...", "67890..."], "uuid2": []}
+    /// Example: `{"uuid1": ["12345...", "67890..."], "uuid2": []}`
     #[conf(long, env, value_parser = serde_json::from_str)]
     pub admin_safety_numbers: HashMap<String, Vec<String>>,
-    /// If set, alerts are sent to this group instead of individual admins
+    /// If set, alerts are sent to this group instead of individual admins.
     #[conf(long, env)]
     pub alert_group_id: Option<String>,
+    /// Prometheus server configuration for querying metrics.
     #[conf(flatten)]
     pub prometheus: Option<PrometheusConfig>,
+    /// Log handler configuration for processing log messages.
     #[conf(flatten)]
     pub log_handler: LogHandlerConfig,
 }
@@ -187,6 +193,7 @@ pub struct Gateway {
 }
 
 impl Gateway {
+    /// Create a new gateway with the given configuration.
     pub async fn new(
         config: GatewayConfig,
         token: CancellationToken,
@@ -212,6 +219,7 @@ impl Gateway {
         }
     }
 
+    /// Run the gateway main loop, reconnecting to signal-cli on errors.
     pub async fn run(&self) {
         loop {
             if self.token.is_cancelled() {
@@ -483,7 +491,7 @@ impl Gateway {
         }
     }
 
-    // Handler function that processes incoming http requests (push's from alertmanager expected)
+    /// Handle an incoming HTTP request (e.g., webhooks from Alertmanager).
     pub async fn handle_http_request<B>(&self, req: Request<B>) -> Result<Response<String>, String>
     where
         B: Body + Send,
@@ -812,6 +820,7 @@ impl Gateway {
         Ok(text)
     }
 
+    /// Process an incoming log message, buffering it and potentially triggering an alert.
     pub async fn handle_log_message(&self, log_msg: impl Into<LogMessage>) {
         let log_msg = log_msg.into();
         let origin = Origin::from(&log_msg);

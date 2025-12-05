@@ -1,18 +1,24 @@
-//! Schema for the alertmanager http POST requests that are sent to us
+//! Schema for the Alertmanager HTTP POST webhook requests.
+//!
+//! See <https://prometheus.io/docs/alerting/latest/configuration/#webhook_config>
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use url::Url;
 
+/// Alert status indicating whether an alert is firing or resolved.
 #[derive(Clone, Copy, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
+    /// The alert condition is no longer true.
     Resolved,
+    /// The alert condition is currently true.
     Firing,
 }
 
 impl Status {
+    /// Returns an emoji symbol representing the status.
     pub fn symbol(&self) -> char {
         match self {
             Status::Firing => '🔴',
@@ -21,41 +27,59 @@ impl Status {
     }
 }
 
+/// The top-level webhook payload from Alertmanager.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlertPost {
-    // should be 4.0
+    /// Alertmanager API version (should be "4").
     pub version: String,
+    /// Key used to group alerts together.
     pub group_key: String,
+    /// Overall status of the alert group.
     pub status: Status,
+    /// Name of the receiver that triggered this webhook.
     pub receiver: String,
+    /// Labels used to group the alerts.
     #[serde(default)]
     pub group_labels: BTreeMap<String, String>,
+    /// Labels common to all alerts in this group.
     #[serde(default)]
     pub common_labels: BTreeMap<String, String>,
+    /// Annotations common to all alerts in this group.
     #[serde(default)]
     pub common_annotations: BTreeMap<String, String>,
+    /// URL of the Alertmanager instance.
     #[serde(alias = "externalURL")]
     pub external_url: String,
+    /// List of alerts in this notification.
     pub alerts: Vec<Alert>,
 }
 
+/// An individual alert from Alertmanager.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Alert {
+    /// Status of this specific alert.
     pub status: Status,
+    /// Labels identifying the alert.
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
+    /// Annotations providing additional information.
     #[serde(default)]
     pub annotations: BTreeMap<String, String>,
+    /// Time when the alert started firing.
     pub starts_at: DateTime<Utc>,
+    /// Time when the alert was resolved (zero value if still firing).
     pub ends_at: DateTime<Utc>,
+    /// URL to the Prometheus graph for this alert's expression.
     #[serde(alias = "generatorURL")]
     pub generator_url: String,
+    /// Unique identifier for this alert.
     pub fingerprint: String,
 }
 
 impl Alert {
+    /// Parse the PromQL expression from the generator URL.
     pub fn parse_expr_from_generator_url(&self) -> Result<String, String> {
         let url = Url::parse(&self.generator_url).map_err(|err| err.to_string())?;
 

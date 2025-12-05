@@ -1,18 +1,31 @@
-//! Log message schema used by this crate
+//! Log message schema and types.
 
 use serde::Deserialize;
 
+/// Log severity level, following syslog conventions.
+///
+/// Lower values indicate higher severity. The ordering allows comparisons
+/// like `level <= Level::ERROR` to match ERROR, CRITICAL, ALERT, and EMERGENCY.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Level {
+    /// System is unusable.
     EMERGENCY = 0,
+    /// Action must be taken immediately.
     ALERT = 1,
+    /// Critical conditions.
     CRITICAL = 2,
+    /// Error conditions.
     ERROR = 3,
+    /// Warning conditions.
     WARNING = 4,
+    /// Normal but significant condition.
     NOTICE = 5,
+    /// Informational messages.
     INFO = 6,
+    /// Debug-level messages.
     DEBUG = 7,
+    /// Trace-level messages (more verbose than debug).
     TRACE = 8,
 }
 
@@ -33,21 +46,32 @@ impl Level {
     }
 }
 
+/// A structured log message.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct LogMessage {
+    /// Severity level of the message.
     pub level: Level,
+    /// Unix timestamp in seconds.
     pub timestamp: Option<i64>,
+    /// Nanosecond component of the timestamp.
     pub timestamp_nanos: u32,
+    /// Hostname where the log originated.
     pub hostname: Option<Box<str>>,
+    /// Application name that generated the log.
     pub appname: Option<Box<str>>,
+    /// The log message text.
     pub msg: Box<str>,
+    /// Module path (e.g., `myapp::server::handler`).
     pub module_path: Option<Box<str>>,
+    /// Source file path.
     pub file: Option<Box<str>>,
+    /// Line number in the source file.
     pub line: Option<Box<str>>,
 }
 
 impl LogMessage {
+    /// Create a builder for constructing a log message.
     pub fn builder(level: Level, msg: impl Into<Box<str>>) -> LogMessageBuilder {
         LogMessageBuilder {
             level,
@@ -63,6 +87,7 @@ impl LogMessage {
     }
 }
 
+/// Builder for constructing [`LogMessage`] instances.
 #[derive(Clone, Debug)]
 pub struct LogMessageBuilder {
     level: Level,
@@ -77,41 +102,49 @@ pub struct LogMessageBuilder {
 }
 
 impl LogMessageBuilder {
+    /// Set the Unix timestamp in seconds.
     pub fn timestamp(mut self, ts: i64) -> Self {
         self.timestamp = Some(ts);
         self
     }
 
+    /// Set the nanosecond component of the timestamp.
     pub fn timestamp_nanos(mut self, nanos: u32) -> Self {
         self.timestamp_nanos = nanos;
         self
     }
 
+    /// Set the hostname.
     pub fn hostname(mut self, hostname: impl Into<Box<str>>) -> Self {
         self.hostname = Some(hostname.into());
         self
     }
 
+    /// Set the application name.
     pub fn appname(mut self, appname: impl Into<Box<str>>) -> Self {
         self.appname = Some(appname.into());
         self
     }
 
+    /// Set the module path.
     pub fn module_path(mut self, module_path: impl Into<Box<str>>) -> Self {
         self.module_path = Some(module_path.into());
         self
     }
 
+    /// Set the source file path.
     pub fn file(mut self, file: impl Into<Box<str>>) -> Self {
         self.file = Some(file.into());
         self
     }
 
+    /// Set the line number.
     pub fn line(mut self, line: impl Into<Box<str>>) -> Self {
         self.line = Some(line.into());
         self
     }
 
+    /// Build the log message.
     pub fn build(self) -> LogMessage {
         LogMessage {
             level: self.level,
@@ -134,10 +167,13 @@ impl From<LogMessageBuilder> for LogMessage {
 }
 
 /// Identifies the source of log messages (app name + host).
+///
 /// Used to separate log buffers and rate limiters per source.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct Origin {
+    /// Application name.
     pub app: Box<str>,
+    /// Hostname.
     pub host: Box<str>,
 }
 
@@ -174,15 +210,21 @@ impl Origin {
     }
 }
 
-/// Filter criteria for matching log messages
+/// Filter criteria for matching log messages.
+///
+/// All non-empty fields must match for the filter to pass.
 #[derive(Clone, Debug, Default, Deserialize)]
 pub struct LogFilter {
+    /// If non-empty, the message must contain this substring.
     #[serde(default)]
     pub msg_contains: String,
+    /// If non-empty, the module path must equal this value exactly.
     #[serde(default)]
     pub module_equals: String,
+    /// If non-empty, the file path must equal this value exactly.
     #[serde(default)]
     pub file_equals: String,
+    /// If non-empty, the line number must equal this value exactly.
     #[serde(default)]
     pub line_equals: String,
 }

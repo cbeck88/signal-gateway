@@ -1,3 +1,10 @@
+//! Signal Gateway library for bridging alertmanager and logging with Signal messenger.
+//!
+//! This crate provides the core functionality for receiving alerts and log messages
+//! and forwarding them to Signal messenger via signal-cli.
+
+#![deny(missing_docs)]
+
 pub mod alertmanager;
 pub mod gateway;
 pub mod message_handler;
