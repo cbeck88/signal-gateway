@@ -1,9 +1,8 @@
 use conf::Conf;
 use prometheus_http_client::{
     AlertInfo, AlertsRequest, ExtractLabels, Labels, LabelsRequest, MetricVal, MetricValue,
-    PromRequest, QueryRequest, SeriesRequest,
+    PromRequest, QueryRequest, ReqwestClient, SeriesRequest,
 };
-use reqwest::Client as ReqwestClient;
 use std::error::Error;
 use tracing::info;
 

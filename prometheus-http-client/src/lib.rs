@@ -18,6 +18,8 @@
 //! When `plot` feature is active, the plot module can be used to plot the timeseries data.
 //! This was designed to be used to generate previews in alert messages.
 
+pub use reqwest::Client as ReqwestClient;
+
 use chrono::{DateTime, Utc};
 use serde::{Serialize, de::DeserializeOwned};
 use std::fmt::Debug;

@@ -27,3 +27,4 @@ tracing-subscriber = { workspace = true }
 [features]
 default = ["plot"]
 plot = ["dep:plotters"]
+rustls-tls = ["reqwest/rustls-tls"]
