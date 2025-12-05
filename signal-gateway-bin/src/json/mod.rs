@@ -20,17 +20,37 @@ use tracing::{error, info, trace};
 mod json_lines;
 use json_lines::read_json_lines_value;
 
-/// Configuration for the JSON listener (UDP and TCP).
+/// Configuration for the JSON log message listener.
+///
+/// Listens for JSON log messages on both UDP and TCP using the same address.
+///
+/// See [`JsonLogMessage`] for the JSON schema.
 #[derive(Clone, Conf, Debug)]
-pub struct UdpJsonConfig {
-    /// Socket to listen for JSON log messages.
+pub struct JsonConfig {
+    /// Socket address to listen for JSON log messages.
     /// Both UDP and TCP listeners are started on this address.
-    /// TCP uses relaxed JSON Lines format (newlines allowed within objects).
+    ///
+    /// - **UDP**: Each datagram should contain a single JSON object.
+    /// - **TCP**: Uses a relaxed JSON Lines format where each JSON object is
+    ///   separated by newlines.
+    ///
+    /// See [`JsonLogMessage`] for the JSON schema. It is roughly compatible
+    /// with logstash, graylog, etc.
+    ///
+    /// * "message", "Message", "msg" for the log mesage string itself
+    /// * "timestamp", "@timestamp", "time" for the timestamp, which can be a numeric unix typestamp,
+    ///   or a string in RFC3339 form
+    /// * "level", "severity" for the log level string
+    /// * "host" or "hostname" for the originating host
+    /// * "app" or "appname" or "application" or "service" for the originating program
+    /// * "file" or "filename" or "source_file" for the source file that wrote the log line
+    /// * "line" or "lineno" for the source file line number that wrote the log line
+    /// * "module" or "module_path" or "logger" or "logger_name" for the source module that wrote the log line
     #[conf(long, env)]
     pub listen_addr: SocketAddr,
 }
 
-impl UdpJsonConfig {
+impl JsonConfig {
     /// Bind UDP and TCP sockets and start background tasks to handle incoming JSON log messages.
     ///
     /// Returns join handles for the background tasks.
@@ -51,7 +71,7 @@ impl UdpJsonConfig {
         info!("Listening for JSON UDP on {}", self.listen_addr);
 
         Ok(tokio::task::spawn(async move {
-            let mut buf = vec![0u8; 65536]; // Larger buffer for JSON
+            let mut buf = vec![0u8; 8192];
             loop {
                 let Ok((len, _addr)) = udp_socket
                     .recv_from(&mut buf)
@@ -122,13 +142,11 @@ async fn handle_tcp_connection(stream: TcpStream, gateway: &Gateway) -> std::io:
             return Ok(()); // Clean EOF
         };
 
-        let text = std::str::from_utf8(&msg_bytes).map_err(|err| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, err)
-        })?;
+        let text = std::str::from_utf8(&msg_bytes)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
 
-        let json_msg: JsonLogMessage = serde_json::from_str(text).map_err(|err| {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, err)
-        })?;
+        let json_msg: JsonLogMessage = serde_json::from_str(text)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
 
         let log_msg = json_msg.into_log_message();
         gateway.handle_log_message(log_msg).await;
@@ -183,7 +201,7 @@ impl JsonLogMessage {
     ///
     /// TODO: Allow this to take configuration options to customize how fields are mapped
     pub fn into_log_message(self) -> LogMessage {
-        let level = self.level.unwrap_or(Level::INFO);
+        let level = self.level.unwrap_or(Level::ERROR);
         let mut builder = LogMessage::builder(level, self.message);
 
         if let Some(ts) = self.timestamp {
@@ -309,7 +327,7 @@ mod tests {
         assert_eq!(msg.message, "Hello, world!");
         let log_msg = msg.into_log_message();
         assert_eq!(&*log_msg.msg, "Hello, world!");
-        assert_eq!(log_msg.level, Level::INFO); // default
+        assert_eq!(log_msg.level, Level::ERROR); // default
     }
 
     #[test]
@@ -524,7 +542,7 @@ mod tests {
         let log_msg = msg.into_log_message();
 
         assert_eq!(&*log_msg.msg, "simple log");
-        assert_eq!(log_msg.level, Level::INFO);
+        assert_eq!(log_msg.level, Level::ERROR);
         assert!(log_msg.hostname.is_none());
         assert!(log_msg.appname.is_none());
         assert!(log_msg.timestamp.is_none());
@@ -535,14 +553,15 @@ mod tests {
         let json = r#"{"message": "test", "level": "unknown_level"}"#;
         let msg: JsonLogMessage = serde_json::from_str(json).unwrap();
         assert_eq!(msg.level, None);
-        // Should default to INFO when converted
+        // Should default to ERROR when converted
         let log_msg = msg.into_log_message();
-        assert_eq!(log_msg.level, Level::INFO);
+        assert_eq!(log_msg.level, Level::ERROR);
     }
 
     #[test]
     fn test_extra_fields_are_ignored() {
-        let json = r#"{"message": "test", "extra_field": "ignored", "nested": {"also": "ignored"}}"#;
+        let json =
+            r#"{"message": "test", "extra_field": "ignored", "nested": {"also": "ignored"}}"#;
         let msg: JsonLogMessage = serde_json::from_str(json).unwrap();
         assert_eq!(msg.message, "test");
     }

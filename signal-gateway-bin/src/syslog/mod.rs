@@ -70,9 +70,9 @@ impl SyslogConfig {
                     continue;
                 };
 
-                let Ok(syslog_msg) = SyslogMessage::from_str(text)
-                    .inspect_err(|err| error!("Syslog UDP packet was not valid syslog: {err}:\n{text}"))
-                else {
+                let Ok(syslog_msg) = SyslogMessage::from_str(text).inspect_err(|err| {
+                    error!("Syslog UDP packet was not valid syslog: {err}:\n{text}")
+                }) else {
                     continue;
                 };
 
@@ -128,7 +128,9 @@ async fn handle_tcp_connection(
     let mut reader = BufReader::new(stream);
 
     loop {
-        let Some(msg_bytes) = read_framed_syslog_bytes(&mut reader, config.tcp_cr_is_delimiter).await? else {
+        let Some(msg_bytes) =
+            read_framed_syslog_bytes(&mut reader, config.tcp_cr_is_delimiter).await?
+        else {
             return Ok(()); // Clean EOF
         };
 
@@ -178,14 +180,16 @@ where
 
             // Octet counting: starts with non-zero digit
             b'1'..=b'9' => {
-                return read_octet_counted_message(reader, first_byte).await.map(Some)
+                return read_octet_counted_message(reader, first_byte)
+                    .await
+                    .map(Some);
             }
 
             // Non-transparent framing: starts with '<' (beginning of syslog PRI)
             b'<' => {
                 return read_non_transparent_message(reader, first_byte, cr_is_delimiter)
                     .await
-                    .map(Some)
+                    .map(Some);
             }
 
             // Invalid first byte
@@ -197,7 +201,7 @@ where
                         first_byte,
                         char::from(first_byte)
                     ),
-                ))
+                ));
             }
         }
     }
@@ -223,7 +227,10 @@ where
                     .checked_mul(10)
                     .and_then(|l| l.checked_add((b - b'0') as usize))
                     .ok_or_else(|| {
-                        std::io::Error::new(std::io::ErrorKind::InvalidData, "message length overflow")
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "message length overflow",
+                        )
                     })?;
             }
             b' ' => break,

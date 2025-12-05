@@ -18,8 +18,8 @@ use admin_netcat::AdminNetcatConfig;
 mod syslog;
 use syslog::SyslogConfig;
 
-mod udp_json;
-use udp_json::UdpJsonConfig;
+mod json;
+use json::JsonConfig;
 
 /// Admin message handler configuration - select how non-command messages are handled
 #[derive(Clone, Debug, Subcommands)]
@@ -53,7 +53,7 @@ struct Config {
     #[conf(flatten, prefix)]
     syslog: Option<SyslogConfig>,
     #[conf(flatten, prefix)]
-    udp_json: Option<UdpJsonConfig>,
+    json: Option<JsonConfig>,
     /// Optional admin message handler (netcat or http)
     #[conf(subcommands)]
     admin_handler: Option<AdminHandlerCommand>,
@@ -124,8 +124,8 @@ async fn main() {
     } else {
         None
     };
-    let _udp_json_tasks = if let Some(udp_json) = &config.udp_json {
-        Some(udp_json.start_tasks(gateway.clone()).await.unwrap())
+    let _json_tasks = if let Some(json) = &config.json {
+        Some(json.start_tasks(gateway.clone()).await.unwrap())
     } else {
         None
     };

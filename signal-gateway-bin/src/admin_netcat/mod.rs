@@ -49,11 +49,13 @@ impl MessageHandler for AdminNetcatHandler {
         _context: &dyn Context,
     ) -> MessageHandlerResult {
         // Connect to server
-        let mut stream =
-            timeout(self.config.timeout, TcpStream::connect(&self.config.tcp_addr))
-                .await
-                .map_err(|_| (504u16, "connecting: timeout".into()))?
-                .map_err(|err| (502u16, format!("connecting: {err}").into()))?;
+        let mut stream = timeout(
+            self.config.timeout,
+            TcpStream::connect(&self.config.tcp_addr),
+        )
+        .await
+        .map_err(|_| (504u16, "connecting: timeout".into()))?
+        .map_err(|err| (502u16, format!("connecting: {err}").into()))?;
 
         // Write message with CRLF terminator
         let message = format!("{}\r\n", msg.message);

@@ -17,9 +17,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, BufReader};
 /// This parser tracks brace and bracket depth to allow newlines within
 /// JSON objects and arrays. A newline only ends the value when we're at
 /// depth 0 (outside any object or array).
-pub async fn read_json_lines_value<R>(
-    reader: &mut BufReader<R>,
-) -> std::io::Result<Option<Vec<u8>>>
+pub async fn read_json_lines_value<R>(reader: &mut BufReader<R>) -> std::io::Result<Option<Vec<u8>>>
 where
     R: AsyncRead + Unpin,
 {

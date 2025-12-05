@@ -61,10 +61,12 @@ impl MessageHandler for AdminHttpHandler {
             .map_err(|err| (502u16, format!("HTTP request failed: {err}").into()))?;
 
         let status = response.status();
-        let body = response
-            .text()
-            .await
-            .map_err(|err| (502u16, format!("Failed to read response body: {err}").into()))?;
+        let body = response.text().await.map_err(|err| {
+            (
+                502u16,
+                format!("Failed to read response body: {err}").into(),
+            )
+        })?;
 
         if !status.is_success() {
             return Err((status.as_u16(), body.into()));

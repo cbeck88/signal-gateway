@@ -485,7 +485,9 @@ impl Gateway {
                 sender_uuid: msg.source_uuid.clone(),
                 group_id: data.group_info.as_ref().map(|g| g.group_id.clone()),
             };
-            handler.handle_verified_signal_message(msg, &GatewayContext).await
+            handler
+                .handle_verified_signal_message(msg, &GatewayContext)
+                .await
         } else {
             Err((501u16, "No message handler configured".into()))
         }
