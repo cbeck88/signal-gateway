@@ -4,7 +4,7 @@
 //! writing the message terminated with CRLF, and reading the response until CRLF.
 
 use conf::Conf;
-use signal_gateway::MessageHandlerResult;
+use signal_gateway::{AdminMessageResponse, MessageHandlerResult};
 use std::time::Duration;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -74,5 +74,5 @@ async fn handle_message(config: &AdminNetcatConfig, message: String) -> MessageH
         .trim_end_matches(['\r', '\n'])
         .to_owned();
 
-    Ok((text, vec![]))
+    Ok(AdminMessageResponse::new(text))
 }

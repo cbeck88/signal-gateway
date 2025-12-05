@@ -2,6 +2,7 @@ use crate::{
     alertmanager::AlertPost,
     jsonrpc::{Envelope, RpcClient, RpcClientError, SignalMessage, connect_tcp},
     log_message::{LogMessage, Origin},
+    message_handler::{AdminMessageResponse, MessageHandler, MessageHandlerResult},
     prometheus::{Prometheus, PrometheusConfig},
 };
 use chrono::Utc;
@@ -11,10 +12,7 @@ use http::{Method, Request, Response, StatusCode};
 use http_body::Body;
 use http_body_util::BodyExt;
 use prometheus_http_client::{AlertStatus, ExtractLabels};
-use std::{
-    collections::HashMap, error::Error, fmt::Write, future::Future, net::SocketAddr,
-    path::PathBuf, pin::Pin,
-};
+use std::{collections::HashMap, fmt::Write, net::SocketAddr, path::PathBuf};
 use tokio::{
     join,
     sync::{
@@ -26,15 +24,6 @@ use std::time::Duration;
 use tokio_util::bytes::Buf;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
-
-/// Response from a message handler: either success with text and optional attachments,
-/// or an error with status code and message.
-pub type MessageHandlerResult = Result<(String, Vec<PathBuf>), (u16, Box<dyn Error + Send + Sync>)>;
-
-/// Handler function for admin messages that don't start with `/`.
-/// Takes the message text and returns a response.
-pub type MessageHandler =
-    Box<dyn Fn(String) -> Pin<Box<dyn Future<Output = MessageHandlerResult> + Send>> + Send + Sync>;
 
 mod circular_buffer;
 mod log_handler;
@@ -291,20 +280,18 @@ impl Gateway {
                                 })
                             );
 
-                            let (message, attachments) = resp.unwrap_or_else(
-                                |(code, msg)| {
-                                    let text = format!("{code}: {msg}");
-                                    error!("Message handler error: {text}");
-                                    (text, vec![])
-                                }
-                            );
+                            let resp = resp.unwrap_or_else(|(code, msg)| {
+                                let text = format!("{code}: {msg}");
+                                error!("Message handler error: {text}");
+                                AdminMessageResponse::new(text)
+                            });
 
-                            let attachments = attachments.into_iter().map(|p| p.to_str().expect("attachments must have utf8 paths").to_owned()).collect();
+                            let attachments = resp.attachments.into_iter().map(|p| p.to_str().expect("attachments must have utf8 paths").to_owned()).collect();
 
                             SignalMessage {
                                 sender: self.config.signal_account.clone(),
                                 recipient: vec![msg.envelope.source_uuid.clone()],
-                                message,
+                                message: resp.text,
                                 attachments,
                             }.send(signal_cli).await?;
                         }
@@ -316,10 +303,7 @@ impl Gateway {
 
     // Returns Err in case of a timeout or handler error
     // Returns Ok when success or error text is generated
-    async fn handle_signal_admin_message(
-        &self,
-        msg: &Envelope,
-    ) -> Result<(String, Vec<PathBuf>), (u16, Box<dyn Error + Send + Sync>)> {
+    async fn handle_signal_admin_message(&self, msg: &Envelope) -> MessageHandlerResult {
         let data = msg.data_message.as_ref().unwrap();
 
         // Admin messages starting with / are handled by gateway
@@ -398,15 +382,12 @@ impl Gateway {
         }
     }
 
-    async fn handle_gateway_command(
-        &self,
-        cmd: GatewayCommand,
-    ) -> Result<(String, Vec<PathBuf>), (u16, Box<dyn Error + Send + Sync>)> {
+    async fn handle_gateway_command(&self, cmd: GatewayCommand) -> MessageHandlerResult {
         match cmd {
             GatewayCommand::Log { filter } => {
                 let handlers = self.log_handlers.read().await;
                 if handlers.is_empty() {
-                    return Ok(("No log sources registered yet".to_string(), vec![]));
+                    return Ok(AdminMessageResponse::new("No log sources registered yet"));
                 }
                 let mut text = String::new();
                 for (origin, handler) in handlers.iter() {
@@ -421,9 +402,9 @@ impl Gateway {
                     text.push('\n');
                 }
                 if text.is_empty() {
-                    return Ok(("No matching log sources".to_string(), vec![]));
+                    return Ok(AdminMessageResponse::new("No matching log sources"));
                 }
-                Ok((text, vec![]))
+                Ok(AdminMessageResponse::new(text))
             }
             GatewayCommand::Query { query } => {
                 let prometheus = self
@@ -455,7 +436,7 @@ impl Gateway {
                             }
                         }
 
-                        Ok((text, vec![]))
+                        Ok(AdminMessageResponse::new(text))
                     }
                     Err(err) => Err((500, err)),
                 }
@@ -469,7 +450,7 @@ impl Gateway {
 
                 prometheus.purge_old_plots();
                 match prometheus.create_oneoff_plot(query.clone(), duration).await {
-                    Ok(filename) => Ok((query, vec![filename])),
+                    Ok(filename) => Ok(AdminMessageResponse::new(query).with_attachment(filename)),
                     Err(err) => Err((500, err)),
                 }
             }
@@ -493,7 +474,7 @@ impl Gateway {
                         if text.is_empty() {
                             text = "no matches".into();
                         }
-                        Ok((text, vec![]))
+                        Ok(AdminMessageResponse::new(text))
                     }
                     Err(err) => Err((500, err)),
                 }
@@ -514,7 +495,7 @@ impl Gateway {
                         if text.is_empty() {
                             text = "no matches".into();
                         }
-                        Ok((text, vec![]))
+                        Ok(AdminMessageResponse::new(text))
                     }
                     Err(err) => Err((500, err)),
                 }
@@ -554,7 +535,7 @@ impl Gateway {
                         if text.is_empty() {
                             text = "no alerts".into();
                         }
-                        Ok((text, vec![]))
+                        Ok(AdminMessageResponse::new(text))
                     }
                     Err(err) => Err((500, err)),
                 }
