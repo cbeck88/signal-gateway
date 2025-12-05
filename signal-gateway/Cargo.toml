@@ -10,17 +10,10 @@ workspace = true
 default = ["plot"]
 plot = ["prometheus-http-client/plot", "dep:chrono-tz", "dep:rand", "dep:walkdir"]
 rustls-tls = ["prometheus-http-client/rustls-tls"]
-bin = ["dep:dotenvy", "dep:hyper", "dep:hyper-util", "dep:tracing-subscriber"]
-
-[[bin]]
-name = "signal-gateway"
-path = "src/bin/main.rs"
-required-features = ["bin"]
 
 [dependencies]
 prometheus-http-client = { workspace = true, default-features = false }
 
-bytes = { workspace = true }
 chrono = { workspace = true }
 conf = { workspace = true }
 conf-extra = { workspace = true }
@@ -39,12 +32,6 @@ tokio = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 url = { workspace = true }
-
-# Optional dependencies for bin feature
-dotenvy = { workspace = true, optional = true }
-hyper = { workspace = true, optional = true }
-hyper-util = { workspace = true, optional = true }
-tracing-subscriber = { workspace = true, optional = true }
 
 # Optional dependencies for plot feature
 chrono-tz = { workspace = true, optional = true }

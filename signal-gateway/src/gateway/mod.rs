@@ -3,7 +3,7 @@ use crate::{
     jsonrpc::{Envelope, RpcClient, RpcClientError, SignalMessage, connect_tcp},
     prometheus::{Prometheus, PrometheusConfig},
 };
-use bytes::Buf;
+use tokio_util::bytes::Buf;
 use conf::{Conf, Subcommands};
 use futures_util::FutureExt;
 pub use http::{Method, Request, Response, StatusCode};

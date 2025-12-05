@@ -1,0 +1,29 @@
+[package]
+name = "signal-gateway-bin"
+version = "0.1.0"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "signal-gateway"
+path = "src/main.rs"
+
+[features]
+default = ["signal-gateway/default"]
+plot = ["signal-gateway/plot"]
+rustls-tls = ["signal-gateway/rustls-tls"]
+
+[dependencies]
+signal-gateway = { path = "../signal-gateway" }
+
+conf = { workspace = true }
+dotenvy = { workspace = true }
+hyper = { workspace = true }
+hyper-util = { workspace = true }
+syslog_rfc5424 = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
+tokio-util = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }

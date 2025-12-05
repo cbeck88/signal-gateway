@@ -1645,20 +1645,16 @@ checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 name = "signal-gateway"
 version = "0.1.0"
 dependencies = [
- "bytes",
  "chrono",
  "chrono-tz",
  "conf",
  "conf-extra",
  "displaydoc",
- "dotenvy",
  "futures-util",
  "http",
  "http-body",
  "http-body-util",
  "humantime",
- "hyper",
- "hyper-util",
  "jsonrpsee",
  "prometheus-http-client",
  "rand",
@@ -1669,9 +1665,24 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
- "tracing-subscriber",
  "url",
  "walkdir",
+]
+
+[[package]]
+name = "signal-gateway-bin"
+version = "0.1.0"
+dependencies = [
+ "conf",
+ "dotenvy",
+ "hyper",
+ "hyper-util",
+ "signal-gateway",
+ "syslog_rfc5424",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
