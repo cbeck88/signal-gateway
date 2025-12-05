@@ -1,5 +1,5 @@
 use crate::{
-    http::{AlertMessage, Status},
+    http::AlertMessage,
     jsonrpc::{Envelope, RpcClient, RpcClientError, SignalMessage, connect_tcp},
     prometheus::{Prometheus, PrometheusConfig},
 };
@@ -644,10 +644,7 @@ impl Gateway {
             .alerts
             .iter()
             .map(|alert| {
-                let symbol = match alert.status {
-                    Status::Firing => "🔴",
-                    Status::Resolved => "🟢",
-                };
+                let symbol = alert.status.symbol();
                 let name = alert
                     .labels
                     .get("alertname")
@@ -679,10 +676,7 @@ impl Gateway {
         let now = Utc::now();
 
         for alert in msg.alerts.iter() {
-            let symbol = match alert.status {
-                Status::Firing => "🔴",
-                Status::Resolved => "🟢",
-            };
+            let symbol = alert.status.symbol();
             let since = {
                 let dur = (now - alert.starts_at).to_std().unwrap_or_default();
                 // reduce precision to at most seconds
