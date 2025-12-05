@@ -3,10 +3,12 @@ use crate::{
     jsonrpc::{Envelope, RpcClient, RpcClientError, SignalMessage, connect_tcp},
     prometheus::{Prometheus, PrometheusConfig},
 };
+use bytes::Buf;
 use conf::{Conf, Subcommands};
 use futures_util::FutureExt;
+pub use http::{Method, Request, Response, StatusCode};
+use http_body::Body;
 use http_body_util::BodyExt;
-use hyper::{Method, Request, Response, StatusCode, body::Incoming};
 use prometheus_http_client::{AlertStatus, ExtractLabels};
 //use jsonrpsee::async_client::{Client as JsonRpcClient, Error as JsonRpcError};
 use chrono::Utc;
@@ -393,10 +395,12 @@ impl Gateway {
     }
 
     // Handler function that processes incoming http requests (push's from alertmanager expected)
-    pub async fn handle_http_request(
-        &self,
-        req: Request<Incoming>,
-    ) -> Result<Response<String>, String> {
+    pub async fn handle_http_request<B>(&self, req: Request<B>) -> Result<Response<String>, String>
+    where
+        B: Body + Send,
+        B::Data: Buf + Send,
+        B::Error: std::fmt::Display,
+    {
         info!(
             "Received http request: {} {} (version: {:?})",
             req.method(),

@@ -2,27 +2,60 @@ use conf::Conf;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
-use std::{str::FromStr, sync::Arc, time::Duration};
+use signal_gateway::{Gateway, GatewayConfig};
+use std::{net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
 use syslog_rfc5424::SyslogMessage;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+use tracing_subscriber::EnvFilter;
 
-pub mod config;
-pub mod gateway;
-pub mod http;
-mod human_duration;
-mod init_logging;
-pub mod jsonrpc;
-pub mod prometheus;
-pub mod transports;
+#[derive(Conf, Debug)]
+struct Config {
+    /// If true, just validate config and don't start
+    #[conf(long)]
+    dry_run: bool,
+    /// Socket to listen for HTTP requests (GET /health, POST /alert)
+    #[conf(long, env, default_value = "0.0.0.0:8000")]
+    http_listen_addr: SocketAddr,
+    /// Socket to listen for UDP messages, in syslog RFC 5424 format
+    #[conf(long, env, default_value = "0.0.0.0:5424")]
+    udp_listen_addr: SocketAddr,
+    #[conf(flatten)]
+    gateway: GatewayConfig,
+}
 
-use config::Config;
-use gateway::Gateway;
+fn init_logging() {
+    // Build a default tracing subscriber, writing to STDERR
+    // Uses RUST_LOG env var for filtering, defaults to "info" if not set
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_file(true)
+        .with_line_number(true)
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
+        .init();
+
+    // load dotenv file
+    match dotenvy::dotenv() {
+        Ok(path) => info!("Read dotenv file from: {}", path.display()),
+        Err(dotenvy::Error::Io(io_error)) => {
+            if matches!(io_error.kind(), std::io::ErrorKind::NotFound) {
+                info!("Couldn't find a dotenv file");
+            } else {
+                panic!("Io error when reading dot env file: {io_error}")
+            }
+        }
+        Err(err) => {
+            panic!("Error reading dotenv file: {err}")
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() {
-    init_logging::init_logging();
+    init_logging();
 
     let config = Config::parse();
 
