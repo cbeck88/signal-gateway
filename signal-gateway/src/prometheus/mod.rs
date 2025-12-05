@@ -12,7 +12,7 @@ mod plot;
 use plot::{PlotConfig, PlotThreshold};
 
 #[cfg(feature = "plot")]
-use crate::http::Alert;
+use crate::alertmanager::Alert;
 #[cfg(feature = "plot")]
 use prometheus_http_client::QueryRangeRequest;
 #[cfg(feature = "plot")]

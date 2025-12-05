@@ -23,7 +23,7 @@ impl Status {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AlertMessage {
+pub struct AlertPost {
     // should be 4.0
     pub version: String,
     pub group_key: String,
@@ -77,7 +77,7 @@ mod tests {
     fn test_alert_message_parsing() {
         let text = r#"{"receiver":"notify-admin","status":"firing","alerts":[{"status":"firing","labels":{"alertname":"Low tick success rate","instance":"172.31.5.8:9000","job":"ec2"},"annotations":{"summary":"Low tick success rate"},"startsAt":"2025-11-07T04:21:46.17Z","endsAt":"0001-01-01T00:00:00Z","generatorURL":"http://ip-172-31-10-138.eu-west-3.compute.internal:9090/graph?g0.expr=rate%28tick_successes%5B5m%5D%29+%3C+0.9\u0026g0.tab=1","fingerprint":"543b6a7a3042ae2c"},{"status":"firing","labels":{"alertname":"Long tail tick times","instance":"172.31.5.8:9000","job":"ec2","quantile":"0.99"},"annotations":{"summary":"Long tail tick times"},"startsAt":"2025-11-07T04:50:01.17Z","endsAt":"0001-01-01T00:00:00Z","generatorURL":"http://ip-172-31-10-138.eu-west-3.compute.internal:9090/graph?g0.expr=tick_time%7Bquantile%3D%220.99%22%7D+%3E+0.8\u0026g0.tab=1","fingerprint":"97130d38ef0ff0a4"}],"groupLabels":{},"commonLabels":{"instance":"172.31.5.8:9000","job":"ec2"},"commonAnnotations":{},"externalURL":"http://ip-172-31-10-138.eu-west-3.compute.internal:9093","version":"4","groupKey":"{}:{}","truncatedAlerts":0}"#;
 
-        let msg: AlertMessage = serde_json::from_str(text).unwrap();
+        let msg: AlertPost = serde_json::from_str(text).unwrap();
 
         assert_eq!(&msg.receiver, "notify-admin");
         assert_eq!(msg.alerts.len(), 2);

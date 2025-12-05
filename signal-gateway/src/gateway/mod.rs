@@ -1,5 +1,5 @@
 use crate::{
-    http::AlertMessage,
+    alertmanager::AlertPost,
     jsonrpc::{Envelope, RpcClient, RpcClientError, SignalMessage, connect_tcp},
     prometheus::{Prometheus, PrometheusConfig},
 };
@@ -612,7 +612,7 @@ impl Gateway {
             (StatusCode::BAD_REQUEST, "Request body was not utf-8")
         })?;
 
-        let alert_msg: AlertMessage = serde_json::from_str(body_text).map_err(|err| {
+        let alert_msg: AlertPost = serde_json::from_str(body_text).map_err(|err| {
             error!("Could not parse json: {err}:\n{body_text}");
             (StatusCode::BAD_REQUEST, "Invalid Json")
         })?;
@@ -671,7 +671,7 @@ impl Gateway {
             })
     }
 
-    fn format_alert_text(&self, msg: &AlertMessage) -> Result<String, String> {
+    fn format_alert_text(&self, msg: &AlertPost) -> Result<String, String> {
         let mut text = "Alert:\n".to_owned();
         let now = Utc::now();
 
