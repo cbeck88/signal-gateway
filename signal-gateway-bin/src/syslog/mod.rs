@@ -1,28 +1,50 @@
-//! Syslog UDP listener for receiving RFC 5424 syslog messages
+//! Syslog listener for receiving RFC 5424 syslog messages over UDP and TCP.
+//!
+//! TCP transport follows RFC 6587, supporting both octet counting and
+//! non-transparent framing methods.
 
 use conf::Conf;
 use signal_gateway::{Gateway, Level, LogMessage};
 use std::{net::SocketAddr, str::FromStr, sync::Arc};
 use syslog_rfc5424::{SyslogMessage, SyslogSeverity};
-use tokio::net::UdpSocket;
+use tokio::{
+    io::{AsyncReadExt, BufReader},
+    net::{TcpListener, TcpStream, UdpSocket},
+};
 use tracing::{error, info};
 
-/// Configuration for the syslog UDP listener
-#[derive(Conf, Debug)]
-pub struct SyslogUdpConfig {
-    /// Socket to listen for UDP messages, in syslog RFC 5424 format
+/// Configuration for the syslog listener (supports both UDP and TCP).
+#[derive(Clone, Conf, Debug)]
+pub struct SyslogConfig {
+    /// Socket address to listen for syslog messages.
+    /// Both UDP and TCP listeners are started on this address.
+    /// Messages use RFC 5424 format; TCP transport follows RFC 6587.
     #[conf(long, env)]
     pub listen_addr: SocketAddr,
-    /// Structured data ID for tracing metadata (module, file, line) in syslog messages
+    /// Structured data ID for tracing metadata (module, file, line) in syslog messages.
     #[conf(long, env, default_value = "tracing-meta@64700")]
     pub sd_id: String,
+    /// If true, use CR as the message delimiter for non-transparent framing instead of LF.
+    /// See RFC 6587 (Syslog over TCP) section 3.4.2.
+    /// Default delimiters: NUL or LF. With this flag: NUL or CR.
+    #[conf(long, env)]
+    pub tcp_cr_is_delimiter: bool,
 }
 
-impl SyslogUdpConfig {
-    /// Bind a UDP socket and start a background task to handle incoming syslog messages.
+impl SyslogConfig {
+    /// Bind UDP and TCP sockets and start background tasks to handle incoming syslog messages.
     ///
-    /// Returns a join handle for the background task.
-    pub async fn start_udp_task(
+    /// Returns join handles for the background tasks.
+    pub async fn start_tasks(
+        &self,
+        gateway: Arc<Gateway>,
+    ) -> std::io::Result<(tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>)> {
+        let udp_handle = self.start_udp_task(gateway.clone()).await?;
+        let tcp_handle = self.start_tcp_task(gateway).await?;
+        Ok((udp_handle, tcp_handle))
+    }
+
+    async fn start_udp_task(
         &self,
         gateway: Arc<Gateway>,
     ) -> std::io::Result<tokio::task::JoinHandle<()>> {
@@ -37,19 +59,19 @@ impl SyslogUdpConfig {
                 let Ok((len, _addr)) = udp_socket
                     .recv_from(&mut buf)
                     .await
-                    .inspect_err(|err| error!("Error receiving UDP packet: {err}"))
+                    .inspect_err(|err| error!("Error receiving syslog UDP packet: {err}"))
                 else {
                     continue;
                 };
 
                 let Ok(text) = std::str::from_utf8(&buf[0..len])
-                    .inspect_err(|err| error!("UDP packet was not utf8: {err}"))
+                    .inspect_err(|err| error!("Syslog UDP packet was not utf8: {err}"))
                 else {
                     continue;
                 };
 
                 let Ok(syslog_msg) = SyslogMessage::from_str(text)
-                    .inspect_err(|err| error!("UDP packet was not valid syslog: {err}:\n{text}"))
+                    .inspect_err(|err| error!("Syslog UDP packet was not valid syslog: {err}:\n{text}"))
                 else {
                     continue;
                 };
@@ -59,6 +81,158 @@ impl SyslogUdpConfig {
             }
         }))
     }
+
+    async fn start_tcp_task(
+        &self,
+        gateway: Arc<Gateway>,
+    ) -> std::io::Result<tokio::task::JoinHandle<()>> {
+        let tcp_listener = TcpListener::bind(self.listen_addr).await?;
+        info!("Listening for syslog TCP on {}", self.listen_addr);
+
+        let config = self.clone();
+
+        Ok(tokio::task::spawn(async move {
+            loop {
+                let Ok((stream, addr)) = tcp_listener
+                    .accept()
+                    .await
+                    .inspect_err(|err| error!("Error accepting syslog TCP connection: {err}"))
+                else {
+                    continue;
+                };
+
+                info!("Accepted syslog TCP connection from {addr}");
+
+                let gateway = gateway.clone();
+                let config = config.clone();
+
+                // Spawn a task for each connection
+                tokio::spawn(async move {
+                    if let Err(err) = handle_tcp_connection(stream, &gateway, &config).await {
+                        error!("Syslog TCP connection from {addr} error: {err}");
+                    }
+                    info!("Syslog TCP connection from {addr} closed");
+                });
+            }
+        }))
+    }
+}
+
+/// Handle a single TCP connection using RFC 6587 framing.
+async fn handle_tcp_connection(
+    stream: TcpStream,
+    gateway: &Gateway,
+    config: &SyslogConfig,
+) -> std::io::Result<()> {
+    let mut reader = BufReader::new(stream);
+
+    loop {
+        // Read first byte to determine framing method
+        let first_byte = match reader.read_u8().await {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(()), // Clean EOF
+            Err(e) => return Err(e),
+        };
+
+        let msg_bytes = match first_byte {
+            // Whitespace: skip and continue
+            b' ' | b'\t' | b'\n' | b'\r' => continue,
+
+            // Octet counting: starts with non-zero digit
+            b'1'..=b'9' => read_octet_counted_message(&mut reader, first_byte).await?,
+
+            // Non-transparent framing: starts with '<' (beginning of syslog PRI)
+            b'<' => read_non_transparent_message(&mut reader, first_byte, config).await?,
+
+            // Invalid first byte
+            _ => {
+                error!(
+                    "Syslog TCP: invalid first byte 0x{:02x} ({:?}), closing connection",
+                    first_byte,
+                    char::from(first_byte)
+                );
+                return Ok(());
+            }
+        };
+
+        // Parse and process the message
+        let Ok(text) = std::str::from_utf8(&msg_bytes)
+            .inspect_err(|err| error!("Syslog TCP message was not utf8: {err}"))
+        else {
+            continue;
+        };
+
+        let Ok(syslog_msg) = SyslogMessage::from_str(text)
+            .inspect_err(|err| error!("Syslog TCP message was not valid: {err}:\n{text}"))
+        else {
+            continue;
+        };
+
+        let log_msg = syslog_to_log_message(syslog_msg, &config.sd_id);
+        gateway.handle_log_message(log_msg).await;
+    }
+}
+
+/// Read an octet-counted message (RFC 6587 section 3.4.1).
+/// Format: MSG-LEN SP SYSLOG-MSG
+async fn read_octet_counted_message(
+    reader: &mut BufReader<TcpStream>,
+    first_digit: u8,
+) -> std::io::Result<Vec<u8>> {
+    let mut len: usize = (first_digit - b'0') as usize;
+
+    // Read remaining digits until space
+    loop {
+        let b = reader.read_u8().await?;
+        match b {
+            b'0'..=b'9' => {
+                len = len
+                    .checked_mul(10)
+                    .and_then(|l| l.checked_add((b - b'0') as usize))
+                    .ok_or_else(|| {
+                        std::io::Error::new(std::io::ErrorKind::InvalidData, "message length overflow")
+                    })?;
+            }
+            b' ' => break,
+            _ => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("expected digit or space in octet count, got 0x{b:02x}"),
+                ));
+            }
+        }
+    }
+
+    // Read exactly `len` bytes
+    let mut buf = vec![0u8; len];
+    reader.read_exact(&mut buf).await?;
+    Ok(buf)
+}
+
+/// Read a non-transparent framed message (RFC 6587 section 3.4.2).
+/// Delimiter is NUL or LF by default, or NUL or CR if `tcp_cr_is_delimiter` is set.
+async fn read_non_transparent_message(
+    reader: &mut BufReader<TcpStream>,
+    first_byte: u8,
+    config: &SyslogConfig,
+) -> std::io::Result<Vec<u8>> {
+    let mut buf = vec![first_byte];
+
+    let line_delimiter = if config.tcp_cr_is_delimiter {
+        b'\r'
+    } else {
+        b'\n'
+    };
+
+    loop {
+        let b = reader.read_u8().await?;
+        if b == b'\0' || b == line_delimiter {
+            break;
+        }
+        buf.push(b);
+    }
+
+    Ok(buf)
 }
 
 /// Convert SyslogSeverity to our Level enum

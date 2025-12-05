@@ -16,7 +16,7 @@ mod admin_netcat;
 use admin_netcat::AdminNetcatConfig;
 
 mod syslog;
-use syslog::SyslogUdpConfig;
+use syslog::SyslogConfig;
 
 mod udp_json;
 use udp_json::UdpJsonConfig;
@@ -51,7 +51,7 @@ struct Config {
     #[conf(long, env, default_value = "0.0.0.0:8000")]
     http_listen_addr: SocketAddr,
     #[conf(flatten, prefix)]
-    syslog_udp: Option<SyslogUdpConfig>,
+    syslog: Option<SyslogConfig>,
     #[conf(flatten, prefix)]
     udp_json: Option<UdpJsonConfig>,
     /// Optional admin message handler (netcat or http)
@@ -119,8 +119,8 @@ async fn main() {
 
     // Start the server tasks
     let _http_task = start_http_task(listener, gateway.clone());
-    let _syslog_udp_task = if let Some(syslog_udp) = &config.syslog_udp {
-        Some(syslog_udp.start_udp_task(gateway.clone()).await.unwrap())
+    let _syslog_tasks = if let Some(syslog) = &config.syslog {
+        Some(syslog.start_tasks(gateway.clone()).await.unwrap())
     } else {
         None
     };
