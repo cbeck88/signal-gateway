@@ -6,11 +6,14 @@ edition.workspace = true
 [lints]
 workspace = true
 
+[features]
+default = ["plot"]
+plot = ["prometheus-http-client/plot", "dep:chrono-tz", "dep:rand", "dep:walkdir"]
+
 [dependencies]
-prometheus-http-client = { workspace = true }
+prometheus-http-client = { workspace = true, default-features = false }
 
 chrono = { workspace = true }
-chrono-tz = { workspace = true }
 conf = { workspace = true }
 conf-extra = { workspace = true }
 displaydoc = { workspace = true }
@@ -21,7 +24,6 @@ humantime = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 jsonrpsee = { workspace = true }
-rand = { workspace = true }
 reqwest = { workspace = true }
 rustls = { workspace = true }
 serde = { workspace = true }
@@ -33,4 +35,7 @@ tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 url = { workspace = true }
-walkdir = { workspace = true }
+
+chrono-tz = { workspace = true, optional = true }
+rand = { workspace = true, optional = true }
+walkdir = { workspace = true, optional = true }

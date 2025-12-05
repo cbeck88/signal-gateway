@@ -44,11 +44,13 @@ impl<T> CircularBuffer<T> {
     }
 
     /// Returns true if the buffer is empty.
+    #[allow(unused)]
     pub fn is_empty(&self) -> bool {
         self.buf.is_empty()
     }
 
     /// Returns the capacity of the buffer.
+    #[allow(unused)]
     pub fn capacity(&self) -> usize {
         self.capacity
     }

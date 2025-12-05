@@ -1,7 +1,7 @@
 use crate::{
     http::{AlertMessage, Status},
     jsonrpc::{Envelope, RpcClient, RpcClientError, SignalMessage, connect_tcp},
-    plotter::{Plotter, PlotterConfig},
+    prometheus::{Prometheus, PrometheusConfig},
 };
 use conf::{Conf, Subcommands};
 use futures_util::FutureExt;
@@ -10,7 +10,9 @@ use hyper::{Method, Request, Response, StatusCode, body::Incoming};
 use prometheus_http_client::{AlertStatus, ExtractLabels};
 //use jsonrpsee::async_client::{Client as JsonRpcClient, Error as JsonRpcError};
 use chrono::Utc;
-use std::{collections::HashMap, error::Error, fmt::Write, net::SocketAddr, time::Duration};
+use std::{
+    collections::HashMap, error::Error, fmt::Write, net::SocketAddr, path::PathBuf, time::Duration,
+};
 use syslog_rfc5424::SyslogMessage;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -45,7 +47,7 @@ pub struct GatewayConfig {
     #[conf(repeat, long, env)]
     pub admin_uuid: Vec<String>,
     #[conf(flatten)]
-    pub plotter: Option<PlotterConfig>,
+    pub prometheus: Option<PrometheusConfig>,
     #[conf(flatten)]
     pub log_handler: LogHandlerConfig,
 }
@@ -58,6 +60,7 @@ struct GatewayCommandWrapper {
 }
 
 /// Commands that can be sent to the gateway (prefixed with /)
+#[allow(unused)]
 #[derive(Clone, Debug, Subcommands)]
 enum GatewayCommand {
     /// Show recent log messages
@@ -171,7 +174,7 @@ struct AdminMessage {
     /// The origin of the message (app + host), if from syslog
     origin: Option<Origin>,
     text: String,
-    attachment_paths: Vec<String>,
+    attachment_paths: Vec<PathBuf>,
     /// Short summary for logging (e.g., alert names for prometheus).
     /// If None, the consumer will use a truncated slice of `text` for logging.
     summary: Option<String>,
@@ -193,7 +196,7 @@ pub struct Gateway {
     admin_mq_tx: UnboundedSender<AdminMessage>,
     admin_mq_rx: Mutex<UnboundedReceiver<AdminMessage>>,
     token: CancellationToken,
-    plotter: Option<Plotter>,
+    prometheus: Option<Prometheus>,
     /// Log handlers keyed by origin (app + host). Lazily created when first message from an origin arrives.
     log_handlers: RwLock<HashMap<Origin, LogHandler>>,
 }
@@ -202,19 +205,19 @@ impl Gateway {
     pub async fn new(config: GatewayConfig, token: CancellationToken) -> Self {
         let (admin_mq_tx, admin_mq_rx) = unbounded_channel();
 
-        let plotter = config
-            .plotter
+        let prometheus = config
+            .prometheus
             .as_ref()
-            .map(|plotter_config| Plotter::new(plotter_config.clone()))
+            .map(|pc| Prometheus::new(pc.clone()))
             .transpose()
-            .expect("Invalid plotter config");
+            .expect("Invalid prometheus config");
 
         Self {
             config,
             admin_mq_tx,
             admin_mq_rx: Mutex::new(admin_mq_rx),
             token,
-            plotter,
+            prometheus,
             log_handlers: RwLock::new(HashMap::new()),
         }
     }
@@ -273,11 +276,12 @@ impl Gateway {
                         } else {
                             msg.text
                         };
+                        let attachments = msg.attachment_paths.into_iter().map(|p| p.to_str().unwrap().to_owned()).collect();
                         SignalMessage {
                             sender: self.config.signal_account.clone(),
                             recipient: self.config.admin_uuid.clone(),
                             message,
-                            attachments: msg.attachment_paths,
+                            attachments,
                         }.send(signal_cli).await?;
                     } else {
                         warn!("admin_mq_rx is closed, halting service");
@@ -307,12 +311,15 @@ impl Gateway {
                                 continue;
                             }
 
-                            let (resp, _) = join!(self.handle_signal_admin_message(&msg.envelope),
-                                            msg.envelope.send_read_receipt(signal_cli, &self.config.signal_account).map(|result| {
-                                                if let Err(err) = result {
-                                                    warn!("Couldn't send read receipt: {err}");
-                                                }
-                                            }));
+                            let (resp, _) = join!(
+                                self.handle_signal_admin_message(&msg.envelope),
+                                msg.envelope.send_read_receipt(signal_cli, &self.config.signal_account).map(|result| {
+                                    if let Err(err) = result {
+                                        warn!("Couldn't send read receipt: {err}");
+                                    }
+                                })
+                            );
+
                             let (message, attachments) = resp.unwrap_or_else(
                                 |(code, msg)| {
                                     let text = format!("{code}: {msg}");
@@ -320,6 +327,8 @@ impl Gateway {
                                     (text, vec![])
                                 }
                             );
+
+                            let attachments = attachments.into_iter().map(|p| p.to_str().expect("attachments must have utf8 paths").to_owned()).collect();
 
                             SignalMessage {
                                 sender: self.config.signal_account.clone(),
@@ -339,7 +348,7 @@ impl Gateway {
     async fn handle_signal_admin_message(
         &self,
         msg: &Envelope,
-    ) -> Result<(String, Vec<String>), (u16, Box<dyn Error>)> {
+    ) -> Result<(String, Vec<PathBuf>), (u16, Box<dyn Error>)> {
         let data = msg.data_message.as_ref().unwrap();
 
         // Admin messages starting with / are handled by gateway
@@ -432,7 +441,7 @@ impl Gateway {
     async fn handle_gateway_command(
         &self,
         cmd: GatewayCommand,
-    ) -> Result<(String, Vec<String>), (u16, Box<dyn Error>)> {
+    ) -> Result<(String, Vec<PathBuf>), (u16, Box<dyn Error>)> {
         match cmd {
             GatewayCommand::Log { filter } => {
                 let handlers = self.log_handlers.read().await;
@@ -457,12 +466,12 @@ impl Gateway {
                 Ok((text, vec![]))
             }
             GatewayCommand::Query { query } => {
-                let plotter = self
-                    .plotter
+                let prometheus = self
+                    .prometheus
                     .as_ref()
                     .ok_or_else(|| (500, "prometheus was not configured".into()))?;
 
-                match plotter.oneoff_query(query).await {
+                match prometheus.oneoff_query(query).await {
                     Ok((
                         ExtractLabels {
                             name,
@@ -491,26 +500,31 @@ impl Gateway {
                     Err(err) => Err((500, err)),
                 }
             }
+            #[cfg(feature = "plot")]
             GatewayCommand::Plot { query, duration } => {
-                let plotter = self
-                    .plotter
+                let prometheus = self
+                    .prometheus
                     .as_ref()
                     .ok_or_else(|| (500, "prometheus was not configured".into()))?;
 
-                plotter.purge_old_plots();
-                match plotter.create_oneoff_plot(query.clone(), duration).await {
+                prometheus.purge_old_plots();
+                match prometheus.create_oneoff_plot(query.clone(), duration).await {
                     Ok(filename) => Ok((query, vec![filename])),
                     Err(err) => Err((500, err)),
                 }
             }
+            #[cfg(not(feature = "plot"))]
+            GatewayCommand::Plot { .. } => {
+                Err((500, "the plot feature was not enabled at build time".into()))
+            }
             GatewayCommand::Series { matchers } => {
-                let plotter = self
-                    .plotter
+                let prometheus = self
+                    .prometheus
                     .as_ref()
                     .ok_or_else(|| (500, "prometheus was not configured".into()))?;
 
                 let matcher_refs: Vec<&str> = matchers.iter().map(|s| s.as_str()).collect();
-                match plotter.series(&matcher_refs).await {
+                match prometheus.series(&matcher_refs).await {
                     Ok(data) => {
                         let mut text = data.iter().fold(String::default(), |mut buf, kv| {
                             writeln!(&mut buf, "{kv:?}").unwrap();
@@ -525,13 +539,13 @@ impl Gateway {
                 }
             }
             GatewayCommand::Labels { matchers } => {
-                let plotter = self
-                    .plotter
+                let prometheus = self
+                    .prometheus
                     .as_ref()
                     .ok_or_else(|| (500, "prometheus was not configured".into()))?;
 
                 let matcher_refs: Vec<&str> = matchers.iter().map(|s| s.as_str()).collect();
-                match plotter.labels(&matcher_refs).await {
+                match prometheus.labels(&matcher_refs).await {
                     Ok(data) => {
                         let mut text = data.iter().fold(String::default(), |mut buf, l| {
                             writeln!(&mut buf, "{l}").unwrap();
@@ -546,12 +560,12 @@ impl Gateway {
                 }
             }
             GatewayCommand::Alerts => {
-                let plotter = self
-                    .plotter
+                let prometheus = self
+                    .prometheus
                     .as_ref()
                     .ok_or_else(|| (500, "prometheus was not configured".into()))?;
 
-                match plotter.alerts().await {
+                match prometheus.alerts().await {
                     Ok(data) => {
                         let now = Utc::now();
                         let mut text = data.iter().fold(String::default(), |mut buf, alert| {
@@ -603,11 +617,14 @@ impl Gateway {
             .format_alert_text(&alert_msg)
             .unwrap_or_else(|err| format!("error formatting alert text: {err}:\n{alert_msg:#?}"));
 
+        #[allow(unused_mut)]
         let mut attachment_paths = vec![];
-        if let Some(plotter) = self.plotter.as_ref() {
-            plotter.purge_old_plots();
+
+        #[cfg(feature = "plot")]
+        if let Some(prometheus) = self.prometheus.as_ref() {
+            prometheus.purge_old_plots();
             for alert in alert_msg.alerts.iter() {
-                match plotter.create_alert_plot(alert).await {
+                match prometheus.create_alert_plot(alert).await {
                     Ok(path) => {
                         attachment_paths.push(path);
                     }

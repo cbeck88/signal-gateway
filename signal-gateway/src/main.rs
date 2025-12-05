@@ -14,7 +14,7 @@ pub mod http;
 mod human_duration;
 mod init_logging;
 pub mod jsonrpc;
-pub mod plotter;
+pub mod prometheus;
 pub mod transports;
 
 use config::Config;
