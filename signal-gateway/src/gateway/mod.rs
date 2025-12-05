@@ -139,7 +139,7 @@ fn parse_gateway_command(s: &str) -> Result<GatewayCommand, String> {
 
     // Parse using Conf, treating the input as command line arguments
     // Prepend a dummy program name since Conf expects argv[0]
-    let args = std::iter::once("gateway")
+    let args = std::iter::once("signal-gateway")
         .chain(s.split_whitespace())
         .collect::<Vec<_>>();
 
