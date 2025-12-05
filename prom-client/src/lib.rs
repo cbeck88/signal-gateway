@@ -1,4 +1,6 @@
-//! API for getting time series data from prometheus
+#![deny(missing_docs)]
+
+//! Minimal API for getting time series data from prometheus
 //!
 //! To use it, instantiate one of the request objects,
 //! e.g. QueryRequest or QueryRangeRequest. When it's helpful a builder is provided.
@@ -12,6 +14,9 @@
 //! In prometheus, metric labels are just a set of key-value pairs. However,
 //! if you are expecting certain structure, you may use any KV object that implements
 //! `serde::Deserialize` in the `PromData` that results from the call.
+//!
+//! When `plot` feature is active, the plot module can be used to plot the timeseries data.
+//! This is mostly intended to be used as previews in alert messages.
 
 use chrono::{DateTime, Utc};
 use serde::{Serialize, de::DeserializeOwned};
@@ -41,7 +46,9 @@ pub use traits::PromRequest;
 /// Query parameters for /api/v1/query prometheus request
 #[derive(Clone, Debug, Serialize)]
 pub struct QueryRequest {
+    /// The PromQL query string
     pub query: String,
+    /// Optional evaluation timestamp (defaults to current time)
     pub time: Option<DateTime<Utc>>,
 }
 
@@ -76,6 +83,7 @@ impl PromRequest for QueryRangeRequest {
 #[derive(Clone, Debug, Serialize)]
 #[serde(transparent)]
 pub struct SeriesRequest {
+    /// Series selector arguments
     pub matches: MatchList,
 }
 
@@ -88,6 +96,7 @@ impl PromRequest for SeriesRequest {
 #[derive(Clone, Debug, Serialize)]
 #[serde(transparent)]
 pub struct LabelsRequest {
+    /// Series selector arguments to filter which labels are returned
     pub matches: MatchList,
 }
 

@@ -9,12 +9,18 @@ pub type Labels = BTreeMap<String, String>;
 
 /// Common labels extracted from a very generic sequence of metric labels (key value pairs)
 pub struct ExtractLabels {
+    /// The metric name (from __name__ label)
     pub name: String,
+    /// Labels that are common to all metrics in the set
     pub common_labels: Labels,
+    /// Labels specific to each metric (excluding common labels)
     pub specific_labels: Vec<Labels>,
 }
 
 impl ExtractLabels {
+    /// Extract common and specific labels from an iterator of metric label sets.
+    ///
+    /// Labels in `skip_labels` are excluded from both common and specific labels.
     pub fn new<'a, I, KV, K, V>(src: I, skip_labels: &[String]) -> Self
     where
         I: Iterator<Item = &'a KV>,

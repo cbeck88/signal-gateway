@@ -1,7 +1,10 @@
+//! Builder for QueryRangeRequest
+
 use super::QueryRangeRequest;
 use chrono::{DateTime, TimeDelta, Utc};
 use std::{ops::Range, time::Duration};
 
+/// Builder for constructing a QueryRangeRequest
 pub struct QueryRangeRequestBuilder {
     query: String,
     range: Option<Range<DateTime<Utc>>>,
@@ -10,6 +13,7 @@ pub struct QueryRangeRequestBuilder {
 }
 
 impl QueryRangeRequestBuilder {
+    /// Create a new builder with the given PromQL query
     pub fn new(query: String) -> Self {
         Self {
             query,
@@ -19,6 +23,7 @@ impl QueryRangeRequestBuilder {
         }
     }
 
+    /// Set the time range for the query
     pub fn range(mut self, range: Range<DateTime<Utc>>) -> Self {
         if self.range.is_some() {
             panic!("already set range: {:?}", self.range);
@@ -27,6 +32,7 @@ impl QueryRangeRequestBuilder {
         self
     }
 
+    /// Set the time range to be from `time` ago until now
     pub fn since(mut self, time: Duration) -> Self {
         if self.range.is_some() {
             panic!("already set range: {:?}", self.range);
@@ -38,6 +44,7 @@ impl QueryRangeRequestBuilder {
         self
     }
 
+    /// Set the step interval between data points
     pub fn step(mut self, step: Duration) -> Self {
         if self.step.is_some() {
             panic!("already set step: {:?}", self.step);
@@ -46,11 +53,13 @@ impl QueryRangeRequestBuilder {
         self
     }
 
+    /// Set the target number of data points (used to compute step if not set)
     pub fn count(mut self, count: usize) -> Self {
         self.count = count;
         self
     }
 
+    /// Build the QueryRangeRequest
     pub fn build(self) -> QueryRangeRequest {
         let query = self.query;
         let range = self.range.unwrap();

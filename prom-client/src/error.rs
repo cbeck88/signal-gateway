@@ -1,6 +1,9 @@
+//! Error types for prom-client
+
 use displaydoc::Display;
 use url::ParseError;
 
+/// Errors that can occur when making Prometheus API requests
 #[derive(Debug, Display)]
 pub enum Error {
     /// URL: {0}

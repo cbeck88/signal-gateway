@@ -1,3 +1,5 @@
+//! Make a simple plot of time-series data from prometheus
+
 use crate::{ExtractLabels, MetricTimeseries};
 use chrono::{DateTime, FixedOffset, TimeZone, Utc};
 use plotters::prelude::*;
@@ -9,18 +11,31 @@ use std::{
     path::Path,
 };
 
+/// Styling options for the plot
 pub struct PlotStyle {
+    /// The pixel size of the plot
     pub drawing_area: (u32, u32),
+    /// The background color
     pub background: RGBAColor,
+    /// The grid color
     pub grid: RGBAColor,
+    /// The axis color
     pub axis: RGBAColor,
+    /// The text color
     pub text_color: RGBAColor,
+    /// The text font
     pub text_font: String,
+    /// The text size
     pub text_size: u32,
+    /// The caption size
     pub caption_size: u32,
+    /// The colors to use for lines. If there are more lines than this, then colors will be repeated.
     pub data_colors: Vec<RGBAColor>,
+    /// The colors to use for a "threshold" such as used in a PromQL alerting rule
     pub threshold_color: RGBAColor,
+    /// Labels to skip rendering of
     pub skip_labels: Vec<String>,
+    /// UTC offset to use when labelling the timestamps being plotted
     pub utc_offset_hours: i32,
     /// Optional title override - used when prometheus aggregations remove __name__
     pub title: Option<String>,
@@ -52,25 +67,42 @@ impl Default for PlotStyle {
             .collect(),
             threshold_color: RED.mix(0.2),
             skip_labels: vec!["job".into(), "instance".into()],
-            utc_offset_hours: -7,
+            utc_offset_hours: 0,
             title: None,
         }
     }
 }
 
 impl PlotStyle {
+    /// Set the drawing_area
+    pub fn with_drawing_area(mut self, drawing_area: impl Into<(u32, u32)>) -> Self {
+        self.drawing_area = drawing_area.into();
+        self
+    }
+
+    /// Override the title of the plot
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
         self
     }
+
+    /// Set the UTC offset (timezone) used in the plot, in hours
+    pub fn with_utc_offset(mut self, offset: i32) -> Self {
+        self.utc_offset_hours = offset;
+        self
+    }
 }
 
+/// A shaded region appearing on the plot to indicate values that would trigger an alert
 pub enum PlotThreshold {
+    /// Shade values greater than this threshold
     GreaterThan(f64),
+    /// Shade values less than this threshold
     LessThan(f64),
 }
 
 impl PlotStyle {
+    /// Use a dark color scheme for the plot
     pub fn dark_mode(mut self) -> Self {
         self.background = BLACK.into();
         self.grid = RGBAColor(100, 100, 100, 0.5);
@@ -133,7 +165,7 @@ impl PlotStyle {
             };
 
         // Add timezone offset to the caption
-        write!(&mut caption, " UTC{o}", o = self.utc_offset_hours)?;
+        write!(&mut caption, " UTC{o:+}", o = self.utc_offset_hours)?;
 
         // Actually start writing the file
         let root_area = BitMapBackend::new(&path, self.drawing_area).into_drawing_area();
