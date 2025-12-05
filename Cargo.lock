@@ -1677,6 +1677,7 @@ dependencies = [
  "dotenvy",
  "hyper",
  "hyper-util",
+ "reqwest",
  "signal-gateway",
  "syslog_rfc5424",
  "tokio",

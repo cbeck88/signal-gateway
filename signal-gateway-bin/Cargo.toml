@@ -23,6 +23,7 @@ conf-extra = { workspace = true }
 dotenvy = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
+reqwest = { workspace = true }
 syslog_rfc5424 = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 tokio-util = { workspace = true }

@@ -1,19 +1,43 @@
-use conf::Conf;
+use conf::{Conf, Subcommands};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
-use signal_gateway::{Gateway, GatewayConfig};
+use signal_gateway::{Gateway, GatewayConfig, MessageHandler};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod admin_http;
+use admin_http::AdminHttpConfig;
+
 mod admin_netcat;
 use admin_netcat::AdminNetcatConfig;
 
 mod syslog;
 use syslog::SyslogUdpConfig;
+
+/// Admin message handler configuration - select how non-command messages are handled
+#[derive(Clone, Debug, Subcommands)]
+enum AdminHandlerCommand {
+    /// Forward (unhandled) admin messages to a TCP endpoint (netcat-style)
+    /// Useful if an http server would be heavy in the target process
+    #[conf(name = "admin-netcat")]
+    Netcat(AdminNetcatConfig),
+    /// Forward (unhandled) admin messages to an HTTP endpoint via POST
+    #[conf(name = "admin-http")]
+    Http(AdminHttpConfig),
+}
+
+impl AdminHandlerConfig {
+    fn into_handler(self) -> MessageHandler {
+        match self {
+            AdminHandlerConfig::Netcat(config) => config.into_handler(),
+            AdminHandlerConfig::Http(config) => config.into_handler(),
+        }
+    }
+}
 
 #[derive(Conf, Debug)]
 struct Config {
@@ -25,8 +49,9 @@ struct Config {
     http_listen_addr: SocketAddr,
     #[conf(flatten, prefix)]
     syslog_udp: Option<SyslogUdpConfig>,
-    #[conf(flatten, prefix)]
-    admin_netcat: Option<AdminNetcatConfig>,
+    /// Optional admin message handler (netcat or http)
+    #[conf(subcommands)]
+    admin_handler: Option<AdminHandlerCommand>,
     #[conf(flatten)]
     gateway: GatewayConfig,
 }
@@ -73,7 +98,7 @@ async fn main() {
 
     let token = CancellationToken::new();
 
-    let message_handler = config.admin_netcat.map(|c| c.into_handler());
+    let message_handler = config.admin_handler.map(|c| c.into_handler());
     let gateway = Arc::new(Gateway::new(config.gateway, token.clone(), message_handler).await);
 
     let listener = TcpListener::bind(config.http_listen_addr).await.unwrap();
