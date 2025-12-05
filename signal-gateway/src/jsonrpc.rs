@@ -430,6 +430,14 @@ pub struct Envelope {
 pub struct DataMessage {
     pub timestamp: u64,
     pub message: String,
+    #[serde(default)]
+    pub group_info: Option<GroupInfo>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupInfo {
+    pub group_id: String,
 }
 
 /// Connect to signal-cli over tcp socket
@@ -472,10 +480,19 @@ impl Envelope {
     }
 }
 
+/// Target for a SignalMessage - either individual recipients or a group
+#[derive(Clone, Debug)]
+pub enum MessageTarget {
+    /// Send to individual recipients
+    Recipients(Vec<String>),
+    /// Send to a group
+    Group(String),
+}
+
 /// Helper for invoking send, which has way too many parameters
 pub struct SignalMessage {
     pub sender: String,
-    pub recipient: Vec<String>,
+    pub target: MessageTarget,
     pub message: String,
     pub attachments: Vec<String>,
 }
@@ -512,8 +529,10 @@ impl SignalMessage {
             editTimestamp: Option<u64>,
         */
         let account = Some(self.sender);
-        let recipients = self.recipient;
-        let groupIds = vec![];
+        let (recipients, groupIds) = match self.target {
+            MessageTarget::Recipients(r) => (r, vec![]),
+            MessageTarget::Group(g) => (vec![], vec![g]),
+        };
         let noteToSelf = false;
         let endSession = false;
         let message = self.message;

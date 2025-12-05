@@ -1,6 +1,6 @@
 use crate::{
     alertmanager::AlertPost,
-    jsonrpc::{Envelope, RpcClient, RpcClientError, SignalMessage, connect_tcp},
+    jsonrpc::{Envelope, MessageTarget, RpcClient, RpcClientError, SignalMessage, connect_tcp},
     log_message::{LogMessage, Origin},
     message_handler::{AdminMessageResponse, MessageHandler, MessageHandlerResult},
     prometheus::{Prometheus, PrometheusConfig},
@@ -52,6 +52,9 @@ pub struct GatewayConfig {
     pub signal_account: String,
     #[conf(repeat, long, env)]
     pub admin_uuid: Vec<String>,
+    /// If set, alerts are sent to this group instead of individual admins
+    #[conf(long, env)]
+    pub alert_group_id: Option<String>,
     #[conf(flatten)]
     pub prometheus: Option<PrometheusConfig>,
     #[conf(flatten)]
@@ -256,9 +259,15 @@ impl Gateway {
                             msg.text
                         };
                         let attachments = msg.attachment_paths.into_iter().map(|p| p.to_str().unwrap().to_owned()).collect();
+                        // Send to group if configured, otherwise to individual admins
+                        let target = if let Some(group_id) = &self.config.alert_group_id {
+                            MessageTarget::Group(group_id.clone())
+                        } else {
+                            MessageTarget::Recipients(self.config.admin_uuid.clone())
+                        };
                         SignalMessage {
                             sender: self.config.signal_account.clone(),
-                            recipient: self.config.admin_uuid.clone(),
+                            target,
                             message,
                             attachments,
                         }.send(signal_cli).await?;
@@ -280,11 +289,16 @@ impl Gateway {
                         }
                         Some(Ok(msg)) => {
                             //info!("Signal Rx: {msg:?}");
-                            if msg.envelope.data_message.is_none() {
+                            let Some(data_message) = &msg.envelope.data_message else {
                                 debug!("Ignoring message which was not a data message: {msg:?}");
                                 continue;
-                            }
+                            };
 
+                            // Determine if this message came from a group
+                            let from_group = data_message.group_info.as_ref().map(|g| g.group_id.clone());
+
+                            // For group messages, check if sender is an admin
+                            // For direct messages, check if sender is an admin
                             if !self.config.admin_uuid.contains(&msg.envelope.source_uuid) {
                                 warn!("Ignoring message from non-admin: {msg:?}");
                                 continue;
@@ -307,9 +321,16 @@ impl Gateway {
 
                             let attachments = resp.attachments.into_iter().map(|p| p.to_str().expect("attachments must have utf8 paths").to_owned()).collect();
 
+                            // Reply to group if message came from a group, otherwise reply to sender
+                            let target = if let Some(group_id) = from_group {
+                                MessageTarget::Group(group_id)
+                            } else {
+                                MessageTarget::Recipients(vec![msg.envelope.source_uuid.clone()])
+                            };
+
                             SignalMessage {
                                 sender: self.config.signal_account.clone(),
-                                recipient: vec![msg.envelope.source_uuid.clone()],
+                                target,
                                 message: resp.text,
                                 attachments,
                             }.send(signal_cli).await?;
