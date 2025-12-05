@@ -1,5 +1,7 @@
 //! Log message schema used by this crate
 
+use serde::Deserialize;
+
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum Level {
@@ -169,5 +171,107 @@ impl Origin {
         } else {
             self.app.contains(filter) || self.host.contains(filter)
         }
+    }
+}
+
+/// Filter criteria for matching log messages
+#[derive(Clone, Debug, Default, Deserialize)]
+pub struct LogFilter {
+    #[serde(default)]
+    pub msg_contains: String,
+    #[serde(default)]
+    pub module_equals: String,
+    #[serde(default)]
+    pub file_equals: String,
+    #[serde(default)]
+    pub line_equals: String,
+}
+
+impl LogFilter {
+    /// Check if a log message matches this filter.
+    ///
+    /// Returns true if all non-empty filter fields match the log message.
+    pub fn matches(&self, log_msg: &LogMessage) -> bool {
+        if !self.msg_contains.is_empty() && !log_msg.msg.contains(&self.msg_contains) {
+            return false;
+        }
+
+        if !self.module_equals.is_empty() {
+            match log_msg.module_path.as_deref() {
+                Some(module) if module == self.module_equals.as_str() => {}
+                _ => return false,
+            }
+        }
+
+        if !self.file_equals.is_empty() {
+            match log_msg.file.as_deref() {
+                Some(file) if file == self.file_equals.as_str() => {}
+                _ => return false,
+            }
+        }
+
+        if !self.line_equals.is_empty() {
+            match log_msg.line.as_deref() {
+                Some(line) if line == self.line_equals.as_str() => {}
+                _ => return false,
+            }
+        }
+
+        true
+    }
+
+    /// Returns true if this filter uses the module field
+    pub fn uses_module(&self) -> bool {
+        !self.module_equals.is_empty()
+    }
+
+    /// Returns true if this filter uses the file field
+    pub fn uses_file(&self) -> bool {
+        !self.file_equals.is_empty()
+    }
+
+    /// Returns true if this filter uses the line field
+    pub fn uses_line(&self) -> bool {
+        !self.line_equals.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_origin_matches_filter() {
+        let origin = Origin {
+            app: "muad-dib".into(),
+            host: "tokyo-server".into(),
+        };
+
+        // Without @: matches if app OR host contains the string
+        assert!(origin.matches_filter("muad"));
+        assert!(origin.matches_filter("dib"));
+        assert!(origin.matches_filter("tokyo"));
+        assert!(origin.matches_filter("server"));
+        assert!(!origin.matches_filter("paris"));
+
+        // With @: app must contain first part AND host must contain second part
+        assert!(origin.matches_filter("muad@tokyo"));
+        assert!(origin.matches_filter("dib@server"));
+        assert!(origin.matches_filter("muad-dib@tokyo-server"));
+        assert!(!origin.matches_filter("muad@paris"));
+        assert!(!origin.matches_filter("other@tokyo"));
+
+        // Empty parts with @
+        assert!(origin.matches_filter("@tokyo")); // empty app filter matches any app
+        assert!(origin.matches_filter("muad@")); // empty host filter matches any host
+        assert!(origin.matches_filter("@")); // both empty, matches everything
+
+        // Edge case: filter matches the @ in the format but origin has no @
+        let origin2 = Origin {
+            app: "app".into(),
+            host: "host".into(),
+        };
+        assert!(origin2.matches_filter("app@host"));
+        assert!(!origin2.matches_filter("app@other"));
     }
 }

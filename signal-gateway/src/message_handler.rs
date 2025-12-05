@@ -1,6 +1,37 @@
 //! Message handler types for admin messages not handled by the gateway.
 
-use std::{error::Error, future::Future, path::PathBuf, pin::Pin};
+use async_trait::async_trait;
+use std::{error::Error, path::PathBuf};
+
+/// A verified Signal message from an admin.
+///
+/// This struct contains the message content and metadata for a message
+/// that has been verified as coming from a trusted admin.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct VerifiedSignalMessage {
+    /// The text content of the message.
+    pub message: String,
+    /// The timestamp of the message (milliseconds since Unix epoch).
+    pub timestamp: u64,
+}
+
+impl VerifiedSignalMessage {
+    /// Create a new verified signal message.
+    pub fn new(message: impl Into<String>, timestamp: u64) -> Self {
+        Self {
+            message: message.into(),
+            timestamp,
+        }
+    }
+}
+
+/// Context for message handler operations.
+///
+/// This trait provides access to gateway functionality that message handlers
+/// may need. Currently empty, but reserved for future expansion.
+#[async_trait]
+pub trait Context: Send + Sync {}
 
 /// Response to an admin message.
 #[non_exhaustive]
@@ -77,7 +108,16 @@ impl AdminMessageResponseBuilder {
 /// Result type for message handler responses.
 pub type MessageHandlerResult = Result<AdminMessageResponse, (u16, Box<dyn Error + Send + Sync>)>;
 
-/// Handler function for admin messages that don't start with `/`.
-/// Takes the message text and returns a response.
-pub type MessageHandler =
-    Box<dyn Fn(String) -> Pin<Box<dyn Future<Output = MessageHandlerResult> + Send>> + Send + Sync>;
+/// Handler for admin messages that don't start with `/`.
+#[async_trait]
+pub trait MessageHandler: Send + Sync {
+    /// Handle a verified Signal message from an admin.
+    ///
+    /// This is called for admin messages that don't start with `/` (which are
+    /// handled as gateway commands).
+    async fn handle_verified_signal_message(
+        &self,
+        msg: VerifiedSignalMessage,
+        context: &dyn Context,
+    ) -> MessageHandlerResult;
+}

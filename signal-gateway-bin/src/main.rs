@@ -2,7 +2,7 @@ use conf::{Conf, Subcommands};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
-use signal_gateway::{Gateway, GatewayConfig, MessageHandler};
+use signal_gateway::{Gateway, GatewayConfig};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -34,7 +34,7 @@ enum AdminHandlerCommand {
 }
 
 impl AdminHandlerCommand {
-    fn into_handler(self) -> MessageHandler {
+    fn into_handler(self) -> Box<dyn signal_gateway::MessageHandler> {
         match self {
             AdminHandlerCommand::Netcat(config) => config.into_handler(),
             AdminHandlerCommand::Http(config) => config.into_handler(),

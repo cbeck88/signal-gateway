@@ -14,6 +14,7 @@ rustls-tls = ["prometheus-http-client/rustls-tls"]
 [dependencies]
 prometheus-http-client = { workspace = true, default-features = false }
 
+async-trait = { workspace = true }
 chrono = { workspace = true }
 conf = { workspace = true }
 conf-extra = { workspace = true }

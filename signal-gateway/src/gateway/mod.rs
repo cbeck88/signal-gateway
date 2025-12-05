@@ -6,7 +6,9 @@ use crate::{
         Envelope, Identity, MessageTarget, RpcClient, RpcClientError, SignalMessage, connect_tcp,
     },
     log_message::{LogMessage, Origin},
-    message_handler::{AdminMessageResponse, MessageHandler, MessageHandlerResult},
+    message_handler::{
+        AdminMessageResponse, Context, MessageHandler, MessageHandlerResult, VerifiedSignalMessage,
+    },
     prometheus::{Prometheus, PrometheusConfig},
 };
 use chrono::Utc;
@@ -181,14 +183,14 @@ pub struct Gateway {
     /// Log handlers keyed by origin (app + host). Lazily created when first message from an origin arrives.
     log_handlers: RwLock<HashMap<Origin, LogHandler>>,
     /// Handler for admin messages that don't start with `/`
-    message_handler: Option<MessageHandler>,
+    message_handler: Option<Box<dyn MessageHandler>>,
 }
 
 impl Gateway {
     pub async fn new(
         config: GatewayConfig,
         token: CancellationToken,
-        message_handler: Option<MessageHandler>,
+        message_handler: Option<Box<dyn MessageHandler>>,
     ) -> Self {
         let (admin_mq_tx, admin_mq_rx) = unbounded_channel();
 
@@ -469,7 +471,8 @@ impl Gateway {
 
             self.handle_gateway_command(cmd).await
         } else if let Some(handler) = &self.message_handler {
-            handler(data.message.clone()).await
+            let msg = VerifiedSignalMessage::new(data.message.clone(), data.timestamp);
+            handler.handle_verified_signal_message(msg, &GatewayContext).await
         } else {
             Err((501u16, "No message handler configured".into()))
         }
@@ -828,6 +831,11 @@ impl Gateway {
     }
 }
 
+/// Placeholder context for message handlers.
+struct GatewayContext;
+
+impl Context for GatewayContext {}
+
 impl Drop for Gateway {
     fn drop(&mut self) {
         self.token.cancel();
@@ -921,40 +929,5 @@ mod tests {
         // Test empty command
         assert!(parse_gateway_command("/").is_err());
         assert!(parse_gateway_command("").is_err());
-    }
-
-    #[test]
-    fn test_origin_matches_filter() {
-        let origin = Origin {
-            app: "muad-dib".into(),
-            host: "tokyo-server".into(),
-        };
-
-        // Without @: matches if app OR host contains the string
-        assert!(origin.matches_filter("muad"));
-        assert!(origin.matches_filter("dib"));
-        assert!(origin.matches_filter("tokyo"));
-        assert!(origin.matches_filter("server"));
-        assert!(!origin.matches_filter("paris"));
-
-        // With @: app must contain first part AND host must contain second part
-        assert!(origin.matches_filter("muad@tokyo"));
-        assert!(origin.matches_filter("dib@server"));
-        assert!(origin.matches_filter("muad-dib@tokyo-server"));
-        assert!(!origin.matches_filter("muad@paris"));
-        assert!(!origin.matches_filter("other@tokyo"));
-
-        // Empty parts with @
-        assert!(origin.matches_filter("@tokyo")); // empty app filter matches any app
-        assert!(origin.matches_filter("muad@")); // empty host filter matches any host
-        assert!(origin.matches_filter("@")); // both empty, matches everything
-
-        // Edge case: filter matches the @ in the format but origin has no @
-        let origin2 = Origin {
-            app: "app".into(),
-            host: "host".into(),
-        };
-        assert!(origin2.matches_filter("app@host"));
-        assert!(!origin2.matches_filter("app@other"));
     }
 }

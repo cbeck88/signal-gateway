@@ -2,7 +2,7 @@ use super::circular_buffer::CircularBuffer;
 use super::{AdminMessage, MultiRateLimiter, RateThreshold, SourceLocationRateLimiter};
 use crate::{
     human_duration::HumanTMinus,
-    log_message::{Level, LogMessage, Origin},
+    log_message::{Level, LogFilter, LogMessage, Origin},
 };
 use chrono::{TimeDelta, Utc};
 use conf::Conf;
@@ -50,47 +50,9 @@ pub struct LogHandlerConfig {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AlertRule {
-    #[serde(default)]
-    pub msg_contains: String,
-    #[serde(default)]
-    pub module_equals: String,
-    #[serde(default)]
-    pub file_equals: String,
-    #[serde(default)]
-    pub line_equals: String,
+    #[serde(flatten)]
+    pub filter: LogFilter,
     pub threshold: RateThreshold,
-}
-
-impl AlertRule {
-    /// Check if a log message passes the filter defined by this rule
-    fn eval_filter(&self, log_msg: &LogMessage) -> bool {
-        if !self.msg_contains.is_empty() && !log_msg.msg.contains(&self.msg_contains) {
-            return false;
-        }
-
-        if !self.module_equals.is_empty() {
-            match log_msg.module_path.as_deref() {
-                Some(module) if module == self.module_equals.as_str() => {}
-                _ => return false,
-            }
-        }
-
-        if !self.file_equals.is_empty() {
-            match log_msg.file.as_deref() {
-                Some(file) if file == self.file_equals.as_str() => {}
-                _ => return false,
-            }
-        }
-
-        if !self.line_equals.is_empty() {
-            match log_msg.line.as_deref() {
-                Some(line) if line == self.line_equals.as_str() => {}
-                _ => return false,
-            }
-        }
-
-        true
-    }
 }
 
 /// The log handler takes log messages from a single origin and decides what
@@ -131,15 +93,15 @@ impl LogHandler {
         let any_rule_uses_module = config
             .alert_rate_limits
             .iter()
-            .any(|r| !r.module_equals.is_empty());
+            .any(|r| r.filter.uses_module());
         let any_rule_uses_file = config
             .alert_rate_limits
             .iter()
-            .any(|r| !r.file_equals.is_empty());
+            .any(|r| r.filter.uses_file());
         let any_rule_uses_line = config
             .alert_rate_limits
             .iter()
-            .any(|r| !r.line_equals.is_empty());
+            .any(|r| r.filter.uses_line());
         let rate_limiters = config
             .alert_rate_limits
             .iter()
@@ -320,8 +282,8 @@ impl LogHandler {
         // Check each configured rule - track which rule suppressed the alert
         // Note: we check all rules even if one already suppressed, to update all rate limiters
         let mut suppressed_by_rule: Option<usize> = None;
-        for (idx, (filter, limiter)) in self.rate_limiters.iter().enumerate() {
-            if filter.eval_filter(log_msg) && !limiter.lock().await.evaluate(ts_sec) {
+        for (idx, (rule, limiter)) in self.rate_limiters.iter().enumerate() {
+            if rule.filter.matches(log_msg) && !limiter.lock().await.evaluate(ts_sec) {
                 suppressed_by_rule.get_or_insert(idx);
             }
         }
