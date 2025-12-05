@@ -25,6 +25,7 @@ prometheus-http-client = { path = "prometheus-http-client" }
 
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }
+chrono-tz = "0.10"
 conf = "0.4"
 conf-extra = "0.1"
 displaydoc = "0.2"

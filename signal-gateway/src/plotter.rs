@@ -1,5 +1,6 @@
 use crate::http::Alert;
-use chrono::Utc;
+use chrono::{FixedOffset, Local, Offset, Utc};
+use chrono_tz::Tz;
 use conf::Conf;
 use prometheus_http_client::{
     AlertInfo, AlertsRequest, ExtractLabels, Labels, LabelsRequest, MetricTimeseries, MetricVal,
@@ -13,11 +14,50 @@ use tracing::{info, warn};
 use walkdir::WalkDir;
 
 #[derive(Clone, Conf, Debug)]
+#[conf(at_most_one_of_fields(utc_offset, timezone))]
 pub struct PlotterConfig {
     #[conf(long, env)]
     pub prometheus_host: String,
     #[conf(long, env, default_value = "30m", value_parser = conf_extra::parse_duration)]
     pub plot_age_limit: Duration,
+    /// Fixed timezone offset for plot timestamps, e.g. "+05:30" or "-08:00".
+    /// Mutually exclusive with --timezone.
+    #[conf(long, env)]
+    pub utc_offset: Option<FixedOffset>,
+    /// Timezone name for plot timestamps, e.g. "US/Mountain" or "Europe/Paris".
+    /// Mutually exclusive with --utc-offset.
+    #[conf(long, env)]
+    pub timezone: Option<Tz>,
+    /// Stroke width for plot lines
+    #[conf(long, env, default_value = "2")]
+    pub line_width: u32,
+    /// Plot dimensions in pixels (width, height), e.g. "1920,1200" or "(1920, 1200)"
+    #[conf(long, env, default_value = "1920,1200", value_parser = parse_dimensions)]
+    pub plot_dimensions: (u32, u32),
+}
+
+fn parse_dimensions(s: &str) -> Result<(u32, u32), String> {
+    let s = s.trim();
+    // Strip optional parentheses
+    let s = s
+        .strip_prefix('(')
+        .and_then(|s| s.strip_suffix(')'))
+        .unwrap_or(s);
+
+    let (left, right) = s
+        .split_once(',')
+        .ok_or_else(|| format!("expected 'width,height', got '{s}'"))?;
+
+    let width = left
+        .trim()
+        .parse::<u32>()
+        .map_err(|e| format!("invalid width: {e}"))?;
+    let height = right
+        .trim()
+        .parse::<u32>()
+        .map_err(|e| format!("invalid height: {e}"))?;
+
+    Ok((width, height))
 }
 
 pub struct Plotter {
@@ -28,17 +68,21 @@ pub struct Plotter {
 }
 
 impl Plotter {
-    pub fn new(config: PlotterConfig) -> Self {
+    pub fn new(config: PlotterConfig) -> Result<Self, &'static str> {
+        if config.utc_offset.is_some() && config.timezone.is_some() {
+            return Err("Cannot specify both --utc-offset and --timezone");
+        }
+
         let plot_dir = "/tmp".into();
         let reqwest_client = ReqwestClient::new();
         let skip_labels = vec!["job".into(), "instance".into()];
 
-        Self {
+        Ok(Self {
             config,
             plot_dir,
             reqwest_client,
             skip_labels,
-        }
+        })
     }
 
     fn create_plot(
@@ -52,10 +96,21 @@ impl Plotter {
             dir = self.plot_dir,
             num = rand::rng().next_u64()
         );
-        let mut plot_style = PlotStyle::default().dark_mode();
-        plot_style.skip_labels = self.skip_labels.clone();
+        let utc_offset = if let Some(offset) = self.config.utc_offset {
+            offset
+        } else if let Some(tz) = self.config.timezone {
+            Utc::now().with_timezone(&tz).offset().fix()
+        } else {
+            *Local::now().offset()
+        };
+        let mut plot_style = PlotStyle::default()
+            .dark_mode()
+            .with_line_width(self.config.line_width)
+            .with_drawing_area(self.config.plot_dimensions)
+            .with_utc_offset(utc_offset)
+            .with_skip_labels(self.skip_labels.clone());
         if let Some(title) = title {
-            plot_style.title = Some(title.to_owned());
+            plot_style = plot_style.with_title(title);
         }
 
         plot_style.plot_timeseries(&filename, matrix, threshold)?;

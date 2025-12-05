@@ -205,7 +205,9 @@ impl Gateway {
         let plotter = config
             .plotter
             .as_ref()
-            .map(|plotter_config| Plotter::new(plotter_config.clone()));
+            .map(|plotter_config| Plotter::new(plotter_config.clone()))
+            .transpose()
+            .expect("Invalid plotter config");
 
         Self {
             config,

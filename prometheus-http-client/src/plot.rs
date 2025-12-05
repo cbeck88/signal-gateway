@@ -12,35 +12,36 @@ use std::{
 };
 
 /// Styling options for the plot
+#[non_exhaustive]
 pub struct PlotStyle {
-    /// The pixel size of the plot
-    pub drawing_area: (u32, u32),
-    /// The background color
-    pub background: RGBAColor,
-    /// The grid color
-    pub grid: RGBAColor,
-    /// The axis color
-    pub axis: RGBAColor,
-    /// The text color
-    pub text_color: RGBAColor,
-    /// The text font
-    pub text_font: String,
-    /// The text size
-    pub text_size: u32,
-    /// The caption size
-    pub caption_size: u32,
-    /// The colors to use for lines. If there are more lines than this, then colors will be repeated.
-    pub data_colors: Vec<RGBAColor>,
-    /// The colors to use for a "threshold" such as used in a PromQL alerting rule
-    pub threshold_color: RGBAColor,
-    /// Labels to skip rendering of
-    pub skip_labels: Vec<String>,
-    /// UTC offset to use when labelling the timestamps being plotted
-    pub utc_offset_hours: i32,
-    /// Optional title override - used when prometheus aggregations remove __name__
-    pub title: Option<String>,
-    /// The stroke width for data lines (default: 1)
-    pub line_width: u32,
+    // The pixel size of the plot
+    drawing_area: (u32, u32),
+    // The background color
+    background: RGBAColor,
+    // The grid color
+    grid: RGBAColor,
+    // The axis color
+    axis: RGBAColor,
+    // The text color
+    text_color: RGBAColor,
+    // The text font
+    text_font: String,
+    // The text size
+    text_size: u32,
+    // The caption size
+    caption_size: u32,
+    // The colors to use for lines. If there are more lines than this, then colors will be repeated.
+    data_colors: Vec<RGBAColor>,
+    // The colors to use for a "threshold" such as used in a PromQL alerting rule
+    threshold_color: RGBAColor,
+    // Labels to skip rendering of
+    skip_labels: Vec<String>,
+    // Timezone offset to use when labelling the timestamps being plotted
+    utc_offset: FixedOffset,
+    // Optional title override - used when prometheus aggregations remove __name__
+    title: Option<String>,
+    // The stroke width for data lines (default: 1)
+    line_width: u32,
 }
 
 impl Default for PlotStyle {
@@ -69,7 +70,7 @@ impl Default for PlotStyle {
             .collect(),
             threshold_color: RED.mix(0.2),
             skip_labels: vec!["job".into(), "instance".into()],
-            utc_offset_hours: 0,
+            utc_offset: FixedOffset::east_opt(0).unwrap(),
             title: None,
             line_width: 1,
         }
@@ -77,27 +78,91 @@ impl Default for PlotStyle {
 }
 
 impl PlotStyle {
-    /// Set the drawing_area
+    /// Set the pixel dimensions of the plot (width, height). Default is 1920x1200.
     pub fn with_drawing_area(mut self, drawing_area: impl Into<(u32, u32)>) -> Self {
         self.drawing_area = drawing_area.into();
         self
     }
 
-    /// Override the title of the plot
+    /// Override the title of the plot. By default, the title is derived from the metric name
+    /// and common labels.
     pub fn with_title(mut self, title: impl Into<String>) -> Self {
         self.title = Some(title.into());
         self
     }
 
-    /// Set the UTC offset (timezone) used in the plot, in hours
-    pub fn with_utc_offset(mut self, offset: i32) -> Self {
-        self.utc_offset_hours = offset;
+    /// Set the timezone offset for timestamp labels. Default is UTC.
+    /// Supports fractional-hour timezones like UTC+5:30.
+    pub fn with_utc_offset(mut self, offset: FixedOffset) -> Self {
+        self.utc_offset = offset;
         self
     }
 
-    /// Set the stroke width for data lines
+    /// Set the stroke width for data lines in pixels. Default is 1.
     pub fn with_line_width(mut self, width: u32) -> Self {
         self.line_width = width;
+        self
+    }
+
+    /// Set label names to exclude from the legend (e.g., "job", "instance").
+    pub fn with_skip_labels(mut self, labels: Vec<String>) -> Self {
+        self.skip_labels = labels;
+        self
+    }
+
+    /// Set the background color of the plot. Default is white.
+    pub fn with_background(mut self, color: impl Into<RGBAColor>) -> Self {
+        self.background = color.into();
+        self
+    }
+
+    /// Set the color of the grid lines. Default is semi-transparent gray.
+    pub fn with_grid_color(mut self, color: impl Into<RGBAColor>) -> Self {
+        self.grid = color.into();
+        self
+    }
+
+    /// Set the color of the axis lines. Default is black.
+    pub fn with_axis_color(mut self, color: impl Into<RGBAColor>) -> Self {
+        self.axis = color.into();
+        self
+    }
+
+    /// Set the color of axis labels and legend text. Default is black.
+    pub fn with_text_color(mut self, color: impl Into<RGBAColor>) -> Self {
+        self.text_color = color.into();
+        self
+    }
+
+    /// Set the font family for text. Default is "sans-serif".
+    pub fn with_text_font(mut self, font: impl Into<String>) -> Self {
+        self.text_font = font.into();
+        self
+    }
+
+    /// Set the font size for axis labels and legend in pixels. Default is 18.
+    pub fn with_text_size(mut self, size: u32) -> Self {
+        self.text_size = size;
+        self
+    }
+
+    /// Set the font size for the plot title/caption in pixels. Default is 36.
+    pub fn with_caption_size(mut self, size: u32) -> Self {
+        self.caption_size = size;
+        self
+    }
+
+    /// Set the colors to cycle through for data lines. If there are more series than colors,
+    /// colors will repeat.
+    pub fn with_data_colors(mut self, colors: Vec<RGBAColor>) -> Self {
+        self.data_colors = colors;
+        self
+    }
+
+    /// Set the color used to shade the threshold region in alert plots. Default is
+    /// semi-transparent red.
+    pub fn with_threshold_color(mut self, color: impl Into<RGBAColor>) -> Self {
+        self.threshold_color = color.into();
         self
     }
 }
@@ -111,7 +176,7 @@ pub enum PlotThreshold {
 }
 
 impl PlotStyle {
-    /// Use a dark color scheme for the plot
+    /// Switch to a dark color scheme: black background with white text and axes.
     pub fn dark_mode(mut self) -> Self {
         self.background = BLACK.into();
         self.grid = RGBAColor(100, 100, 100, 0.5);
@@ -162,19 +227,17 @@ impl PlotStyle {
         // Format date-times differently depending on the range of date-times being displayed.
         //
         // If they are all on the same day, then omit the day, and put it in the caption instead
-        let timezone =
-            FixedOffset::east_opt(3600 * self.utc_offset_hours).ok_or("invalid timezone")?;
-        let start_date_naive = x_range.start.with_timezone(&timezone).date_naive();
+        let start_date_naive = x_range.start.with_timezone(&self.utc_offset).date_naive();
         let date_format_str =
-            if start_date_naive == x_range.end.with_timezone(&timezone).date_naive() {
+            if start_date_naive == x_range.end.with_timezone(&self.utc_offset).date_naive() {
                 write!(&mut caption, " {start_date_naive}")?;
                 "%H:%M:%S"
             } else {
                 "%m/%d %H:%M:%S"
             };
 
-        // Add timezone offset to the caption
-        write!(&mut caption, " UTC{o:+}", o = self.utc_offset_hours)?;
+        // Add timezone offset to the caption (FixedOffset displays as +HH:MM or -HH:MM)
+        write!(&mut caption, " UTC{}", self.utc_offset)?;
 
         // Actually start writing the file
         let root_area = BitMapBackend::new(&path, self.drawing_area).into_drawing_area();
@@ -199,7 +262,7 @@ impl PlotStyle {
             .bold_line_style(self.axis) // White bold lines
             .label_style(text_style.clone())
             .x_label_formatter(&|x| {
-                x.with_timezone(&timezone)
+                x.with_timezone(&self.utc_offset)
                     .format(date_format_str)
                     .to_string()
             })
