@@ -3,15 +3,13 @@ use crate::{
     jsonrpc::{Envelope, RpcClient, RpcClientError, SignalMessage, connect_tcp},
     prometheus::{Prometheus, PrometheusConfig},
 };
+use chrono::Utc;
 use conf::{Conf, Subcommands};
 use futures_util::FutureExt;
 use http::{Method, Request, Response, StatusCode};
 use http_body::Body;
 use http_body_util::BodyExt;
 use prometheus_http_client::{AlertStatus, ExtractLabels};
-use tokio_util::bytes::Buf;
-//use jsonrpsee::async_client::{Client as JsonRpcClient, Error as JsonRpcError};
-use chrono::Utc;
 use std::{
     collections::HashMap, error::Error, fmt::Write, net::SocketAddr, path::PathBuf, time::Duration,
 };
@@ -26,6 +24,7 @@ use tokio::{
     },
     time::timeout,
 };
+use tokio_util::bytes::Buf;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
