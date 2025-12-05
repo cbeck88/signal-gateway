@@ -3,13 +3,13 @@ use crate::{
     jsonrpc::{Envelope, RpcClient, RpcClientError, SignalMessage, connect_tcp},
     prometheus::{Prometheus, PrometheusConfig},
 };
-use tokio_util::bytes::Buf;
 use conf::{Conf, Subcommands};
 use futures_util::FutureExt;
 use http::{Method, Request, Response, StatusCode};
 use http_body::Body;
 use http_body_util::BodyExt;
 use prometheus_http_client::{AlertStatus, ExtractLabels};
+use tokio_util::bytes::Buf;
 //use jsonrpsee::async_client::{Client as JsonRpcClient, Error as JsonRpcError};
 use chrono::Utc;
 use std::{
@@ -419,15 +419,21 @@ impl Gateway {
 
         match req.uri().path() {
             "/" | "/health" | "/ready" => {
-                if !matches!(req.method(), Method::GET | Method::HEAD) {
-                    Ok(err_resp(StatusCode::UNIMPLEMENTED, "Use GET or HEAD with this route"))
+                if !matches!(req.method(), &Method::GET | &Method::HEAD) {
+                    Ok(err_resp(
+                        StatusCode::NOT_IMPLEMENTED,
+                        "Use GET or HEAD with this route",
+                    ))
                 } else {
                     Ok(ok_resp())
                 }
-            },
+            }
             "/alert" => {
-                if !matches!(req.method(), Method::POST) {
-                    return Ok(err_resp(StatusCode::UNIMPLEMENTED, "Use POST with this route"));
+                if !matches!(req.method(), &Method::POST) {
+                    return Ok(err_resp(
+                        StatusCode::NOT_IMPLEMENTED,
+                        "Use POST with this route",
+                    ));
                 }
                 let v = req
                     .into_body()
@@ -442,7 +448,7 @@ impl Gateway {
                 } else {
                     Ok(ok_resp())
                 }
-            },
+            }
             _ => Ok(err_resp(
                 StatusCode::NOT_FOUND,
                 format!("Not found '{} {}'", req.method(), req.uri().path()),
