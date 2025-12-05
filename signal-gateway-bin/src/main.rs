@@ -18,6 +18,9 @@ use admin_netcat::AdminNetcatConfig;
 mod syslog;
 use syslog::SyslogUdpConfig;
 
+mod udp_json;
+use udp_json::UdpJsonConfig;
+
 /// Admin message handler configuration - select how non-command messages are handled
 #[derive(Clone, Debug, Subcommands)]
 enum AdminHandlerCommand {
@@ -30,11 +33,11 @@ enum AdminHandlerCommand {
     Http(AdminHttpConfig),
 }
 
-impl AdminHandlerConfig {
+impl AdminHandlerCommand {
     fn into_handler(self) -> MessageHandler {
         match self {
-            AdminHandlerConfig::Netcat(config) => config.into_handler(),
-            AdminHandlerConfig::Http(config) => config.into_handler(),
+            AdminHandlerCommand::Netcat(config) => config.into_handler(),
+            AdminHandlerCommand::Http(config) => config.into_handler(),
         }
     }
 }
@@ -49,6 +52,8 @@ struct Config {
     http_listen_addr: SocketAddr,
     #[conf(flatten, prefix)]
     syslog_udp: Option<SyslogUdpConfig>,
+    #[conf(flatten, prefix)]
+    udp_json: Option<UdpJsonConfig>,
     /// Optional admin message handler (netcat or http)
     #[conf(subcommands)]
     admin_handler: Option<AdminHandlerCommand>,
@@ -112,10 +117,15 @@ async fn main() {
         thread_token.cancel();
     });
 
-    // Start the two server tasks
+    // Start the server tasks
     let _http_task = start_http_task(listener, gateway.clone());
-    let _udp_task = if let Some(syslog_udp) = &config.syslog_udp {
+    let _syslog_udp_task = if let Some(syslog_udp) = &config.syslog_udp {
         Some(syslog_udp.start_udp_task(gateway.clone()).await.unwrap())
+    } else {
+        None
+    };
+    let _udp_json_task = if let Some(udp_json) = &config.udp_json {
+        Some(udp_json.start_udp_task(gateway.clone()).await.unwrap())
     } else {
         None
     };

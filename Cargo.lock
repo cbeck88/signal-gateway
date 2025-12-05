@@ -1672,12 +1672,15 @@ dependencies = [
 name = "signal-gateway-bin"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "conf",
  "conf-extra",
  "dotenvy",
  "hyper",
  "hyper-util",
  "reqwest",
+ "serde",
+ "serde_json",
  "signal-gateway",
  "syslog_rfc5424",
  "tokio",
