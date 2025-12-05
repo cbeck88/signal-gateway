@@ -1,14 +1,13 @@
 use crate::http::Alert;
 use chrono::Utc;
 use conf::Conf;
-use prom_client::{
-    AlertInfo, AlertsRequest, ExtractLabels, Labels, LabelsRequest, MetricTimeseries, MetricValue,
-    PromRequest, QueryRangeRequest, QueryRequest, SeriesRequest,
+use prometheus_http_client::{
+    AlertInfo, AlertsRequest, ExtractLabels, Labels, LabelsRequest, MetricTimeseries, MetricVal,
+    MetricValue, PromRequest, QueryRangeRequest, QueryRequest, SeriesRequest,
     plot::{PlotStyle, PlotThreshold},
 };
 use rand::RngCore;
 use reqwest::Client as ReqwestClient;
-use prom_client::MetricVal;
 use std::{error::Error, str::FromStr, time::Duration};
 use tracing::{info, warn};
 use walkdir::WalkDir;

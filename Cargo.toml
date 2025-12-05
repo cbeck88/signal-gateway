@@ -1,7 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
-    "prom-client",
+    "prometheus-http-client",
     "signal-gateway",
 ]
 
@@ -21,7 +21,7 @@ assigning_clones = "allow"
 result_large_err = "allow"
 
 [workspace.dependencies]
-prom-client = { path = "prom-client" }
+prometheus-http-client = { path = "prometheus-http-client" }
 
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }

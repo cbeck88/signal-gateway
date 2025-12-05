@@ -7,7 +7,7 @@ use conf::{Conf, Subcommands};
 use futures_util::FutureExt;
 use http_body_util::BodyExt;
 use hyper::{Method, Request, Response, StatusCode, body::Incoming};
-use prom_client::{AlertStatus, ExtractLabels};
+use prometheus_http_client::{AlertStatus, ExtractLabels};
 //use jsonrpsee::async_client::{Client as JsonRpcClient, Error as JsonRpcError};
 use chrono::Utc;
 use std::{collections::HashMap, error::Error, fmt::Write, net::SocketAddr, time::Duration};

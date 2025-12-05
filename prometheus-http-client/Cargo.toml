@@ -1,5 +1,5 @@
 [package]
-name = "prom-client"
+name = "prometheus-http-client"
 version = "0.1.0"
 edition.workspace = true
 

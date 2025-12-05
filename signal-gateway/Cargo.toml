@@ -7,7 +7,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-prom-client = { workspace = true }
+prometheus-http-client = { workspace = true }
 
 chrono = { workspace = true }
 conf = { workspace = true }
