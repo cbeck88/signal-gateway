@@ -1,7 +1,7 @@
 //! Logging initialization for signal-gateway
 
-use std::env;
 use tracing::info;
+use tracing_subscriber::EnvFilter;
 
 pub fn init_logging() {
     // Install rustls crypto provider before any TLS connections are made.
@@ -11,17 +11,13 @@ pub fn init_logging() {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    if env::var("RUST_LOG").is_err() {
-        unsafe {
-            env::set_var("RUST_LOG", "info");
-        }
-    }
-
     // Build a default tracing subscriber, writing to STDERR
+    // Uses RUST_LOG env var for filtering, defaults to "info" if not set
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .with_file(true)
         .with_line_number(true)
+        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();
 
     // load dotenv file
