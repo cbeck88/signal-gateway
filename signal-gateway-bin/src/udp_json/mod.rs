@@ -1,29 +1,49 @@
-//! JSON UDP listener for receiving log messages in a logstash-compatible format
+//! JSON listener for receiving log messages in a logstash-compatible format.
 //!
-//! This module accepts JSON log messages over UDP and converts them to LogMessage.
+//! This module accepts JSON log messages over UDP and TCP, converting them to LogMessage.
 //! It's designed to be flexible and accept various common formats.
+//!
+//! TCP connections use a relaxed JSON Lines format that allows newlines within
+//! JSON objects (standard JSON Lines requires each value on a single line).
 
 use chrono::{DateTime, TimeZone, Utc};
 use conf::Conf;
 use serde::Deserialize;
 use signal_gateway::{Gateway, Level, LogMessage};
 use std::{net::SocketAddr, sync::Arc};
-use tokio::net::UdpSocket;
-use tracing::{error, info};
+use tokio::{
+    io::BufReader,
+    net::{TcpListener, TcpStream, UdpSocket},
+};
+use tracing::{error, info, trace};
 
-/// Configuration for the JSON UDP listener
-#[derive(Conf, Debug)]
+mod json_lines;
+use json_lines::read_json_lines_value;
+
+/// Configuration for the JSON listener (UDP and TCP).
+#[derive(Clone, Conf, Debug)]
 pub struct UdpJsonConfig {
-    /// Socket to listen for UDP messages in JSON format
+    /// Socket to listen for JSON log messages.
+    /// Both UDP and TCP listeners are started on this address.
+    /// TCP uses relaxed JSON Lines format (newlines allowed within objects).
     #[conf(long, env)]
     pub listen_addr: SocketAddr,
 }
 
 impl UdpJsonConfig {
-    /// Bind a UDP socket and start a background task to handle incoming JSON log messages.
+    /// Bind UDP and TCP sockets and start background tasks to handle incoming JSON log messages.
     ///
-    /// Returns a join handle for the background task.
-    pub async fn start_udp_task(
+    /// Returns join handles for the background tasks.
+    pub async fn start_tasks(
+        &self,
+        gateway: Arc<Gateway>,
+    ) -> std::io::Result<(tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>)> {
+        let udp_handle = self.start_udp_task(gateway.clone()).await?;
+        let tcp_handle = self.start_tcp_task(gateway).await?;
+        Ok((udp_handle, tcp_handle))
+    }
+
+    async fn start_udp_task(
         &self,
         gateway: Arc<Gateway>,
     ) -> std::io::Result<tokio::task::JoinHandle<()>> {
@@ -57,6 +77,61 @@ impl UdpJsonConfig {
                 gateway.handle_log_message(log_msg).await;
             }
         }))
+    }
+
+    async fn start_tcp_task(
+        &self,
+        gateway: Arc<Gateway>,
+    ) -> std::io::Result<tokio::task::JoinHandle<()>> {
+        let tcp_listener = TcpListener::bind(self.listen_addr).await?;
+        info!("Listening for JSON TCP on {}", self.listen_addr);
+
+        Ok(tokio::task::spawn(async move {
+            loop {
+                let Ok((stream, addr)) = tcp_listener
+                    .accept()
+                    .await
+                    .inspect_err(|err| error!("Error accepting JSON TCP connection: {err}"))
+                else {
+                    continue;
+                };
+
+                trace!("Accepted JSON TCP connection from {addr}");
+
+                let gateway = gateway.clone();
+
+                // Spawn a task for each connection
+                tokio::spawn(async move {
+                    if let Err(err) = handle_tcp_connection(stream, &gateway).await {
+                        error!("JSON TCP connection from {addr} error: {err}");
+                    } else {
+                        trace!("JSON TCP connection from {addr} closed");
+                    }
+                });
+            }
+        }))
+    }
+}
+
+/// Handle a single TCP connection using relaxed JSON Lines framing.
+async fn handle_tcp_connection(stream: TcpStream, gateway: &Gateway) -> std::io::Result<()> {
+    let mut reader = BufReader::new(stream);
+
+    loop {
+        let Some(msg_bytes) = read_json_lines_value(&mut reader).await? else {
+            return Ok(()); // Clean EOF
+        };
+
+        let text = std::str::from_utf8(&msg_bytes).map_err(|err| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, err)
+        })?;
+
+        let json_msg: JsonLogMessage = serde_json::from_str(text).map_err(|err| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, err)
+        })?;
+
+        let log_msg = json_msg.into_log_message();
+        gateway.handle_log_message(log_msg).await;
     }
 }
 
@@ -105,6 +180,8 @@ pub struct JsonLogMessage {
 
 impl JsonLogMessage {
     /// Convert to a LogMessage
+    ///
+    /// TODO: Allow this to take configuration options to customize how fields are mapped
     pub fn into_log_message(self) -> LogMessage {
         let level = self.level.unwrap_or(Level::INFO);
         let mut builder = LogMessage::builder(level, self.message);
@@ -468,5 +545,115 @@ mod tests {
         let json = r#"{"message": "test", "extra_field": "ignored", "nested": {"also": "ignored"}}"#;
         let msg: JsonLogMessage = serde_json::from_str(json).unwrap();
         assert_eq!(msg.message, "test");
+    }
+
+    // Tests for TCP stream parsing (read_json_lines_value + JSON parsing)
+
+    use tokio::io::AsyncRead;
+
+    /// Test helper that mimics handle_tcp_connection's parsing logic
+    async fn parse_next_message<R: AsyncRead + Unpin>(
+        reader: &mut BufReader<R>,
+    ) -> std::io::Result<Option<LogMessage>> {
+        let Some(msg_bytes) = read_json_lines_value(reader).await? else {
+            return Ok(None);
+        };
+
+        let text = std::str::from_utf8(&msg_bytes)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+
+        let json_msg: JsonLogMessage = serde_json::from_str(text)
+            .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidData, err))?;
+
+        Ok(Some(json_msg.into_log_message()))
+    }
+
+    #[tokio::test]
+    async fn test_tcp_valid_message() {
+        let data: &[u8] = b"{\"message\": \"hello\"}\n";
+        let mut reader = BufReader::new(data);
+        let result = parse_next_message(&mut reader).await.unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert_eq!(&*msg.msg, "hello");
+    }
+
+    #[tokio::test]
+    async fn test_tcp_multiple_messages() {
+        let data: &[u8] = b"{\"message\": \"first\"}\n{\"message\": \"second\"}\n";
+        let mut reader = BufReader::new(data);
+
+        let msg1 = parse_next_message(&mut reader).await.unwrap().unwrap();
+        assert_eq!(&*msg1.msg, "first");
+
+        let msg2 = parse_next_message(&mut reader).await.unwrap().unwrap();
+        assert_eq!(&*msg2.msg, "second");
+
+        let msg3 = parse_next_message(&mut reader).await.unwrap();
+        assert!(msg3.is_none()); // EOF
+    }
+
+    #[tokio::test]
+    async fn test_tcp_eof_returns_none() {
+        let data: &[u8] = b"";
+        let mut reader = BufReader::new(data);
+        let result = parse_next_message(&mut reader).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_tcp_invalid_utf8_returns_error() {
+        // Invalid UTF-8 bytes inside a "JSON" structure
+        let data: &[u8] = b"{\"\xff\xfe\": \"bad\"}\n";
+        let mut reader = BufReader::new(data);
+        let result = parse_next_message(&mut reader).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn test_tcp_invalid_json_returns_error() {
+        let data: &[u8] = b"{not valid json}\n";
+        let mut reader = BufReader::new(data);
+        let result = parse_next_message(&mut reader).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn test_tcp_missing_required_field_returns_error() {
+        // Valid JSON but missing required "message" field
+        let data: &[u8] = b"{\"level\": \"info\"}\n";
+        let mut reader = BufReader::new(data);
+        let result = parse_next_message(&mut reader).await;
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[tokio::test]
+    async fn test_tcp_error_stops_processing() {
+        // First message valid, second invalid - error should stop further processing
+        let data: &[u8] = b"{\"message\": \"ok\"}\n{invalid}\n{\"message\": \"never reached\"}\n";
+        let mut reader = BufReader::new(data);
+
+        // First message succeeds
+        let msg1 = parse_next_message(&mut reader).await.unwrap();
+        assert!(msg1.is_some());
+
+        // Second message fails with error
+        let result = parse_next_message(&mut reader).await;
+        assert!(result.is_err());
+        // After error, caller should close connection - no third read attempted
+    }
+
+    #[tokio::test]
+    async fn test_tcp_multiline_json() {
+        let data: &[u8] = b"{\n  \"message\": \"hello\",\n  \"level\": \"error\"\n}\n";
+        let mut reader = BufReader::new(data);
+        let result = parse_next_message(&mut reader).await.unwrap();
+        assert!(result.is_some());
+        let msg = result.unwrap();
+        assert_eq!(&*msg.msg, "hello");
+        assert_eq!(msg.level, Level::ERROR);
     }
 }

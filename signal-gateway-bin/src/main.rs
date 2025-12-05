@@ -124,8 +124,8 @@ async fn main() {
     } else {
         None
     };
-    let _udp_json_task = if let Some(udp_json) = &config.udp_json {
-        Some(udp_json.start_udp_task(gateway.clone()).await.unwrap())
+    let _udp_json_tasks = if let Some(udp_json) = &config.udp_json {
+        Some(udp_json.start_tasks(gateway.clone()).await.unwrap())
     } else {
         None
     };
