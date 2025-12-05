@@ -4,7 +4,7 @@
 //! writing the message terminated with CRLF, and reading the response until CRLF.
 
 use conf::Conf;
-use signal_gateway::{AdminMessageResponse, MessageHandlerResult};
+use signal_gateway::{AdminMessageResponse, MessageHandler, MessageHandlerResult};
 use std::time::Duration;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
@@ -28,16 +28,7 @@ impl AdminNetcatConfig {
     ///
     /// The returned handler opens a TCP connection to the configured address,
     /// writes the message terminated with CRLF, and reads the response until CRLF.
-    pub fn into_handler(
-        self,
-    ) -> Box<
-        dyn Fn(
-                String,
-            )
-                -> std::pin::Pin<Box<dyn std::future::Future<Output = MessageHandlerResult> + Send>>
-            + Send
-            + Sync,
-    > {
+    pub fn into_handler(self) -> MessageHandler {
         Box::new(move |message: String| {
             let config = self.clone();
             Box::pin(async move { handle_message(&config, message).await })
