@@ -1,8 +1,9 @@
+use super::BoxError;
 use chrono::{FixedOffset, Local, Offset, Utc};
 use chrono_tz::Tz;
 use conf::Conf;
 use rand::RngCore;
-use std::{error::Error, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 use tracing::{error, warn};
 use walkdir::WalkDir;
 
@@ -46,7 +47,7 @@ impl PlotConfig {
         matrix: &[MetricTimeseries],
         threshold: Option<PlotThreshold>,
         title: Option<&str>,
-    ) -> Result<PathBuf, Box<dyn Error>> {
+    ) -> Result<PathBuf, BoxError> {
         let mut filename = self.dir.clone();
         filename.push(format!("plot-{}", rand::rng().next_u64()));
         filename.set_extension("png");

@@ -19,6 +19,7 @@ rustls-tls = ["signal-gateway/rustls-tls"]
 signal-gateway = { path = "../signal-gateway" }
 
 conf = { workspace = true }
+conf-extra = { workspace = true }
 dotenvy = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }

@@ -9,6 +9,9 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
 
+mod admin_netcat;
+use admin_netcat::AdminNetcatConfig;
+
 mod syslog;
 use syslog::SyslogUdpConfig;
 
@@ -22,6 +25,8 @@ struct Config {
     http_listen_addr: SocketAddr,
     #[conf(flatten, prefix)]
     syslog_udp: Option<SyslogUdpConfig>,
+    #[conf(flatten, prefix)]
+    admin_netcat: Option<AdminNetcatConfig>,
     #[conf(flatten)]
     gateway: GatewayConfig,
 }
@@ -68,7 +73,8 @@ async fn main() {
 
     let token = CancellationToken::new();
 
-    let gateway = Arc::new(Gateway::new(config.gateway, token.clone()).await);
+    let message_handler = config.admin_netcat.map(|c| c.into_handler());
+    let gateway = Arc::new(Gateway::new(config.gateway, token.clone(), message_handler).await);
 
     let listener = TcpListener::bind(config.http_listen_addr).await.unwrap();
     info!("Listening for http on {}", config.http_listen_addr);

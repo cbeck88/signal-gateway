@@ -192,7 +192,7 @@ impl PlotStyle {
         path: impl AsRef<Path>,
         mts: &[MetricTimeseries<KV>],
         plot_threshold: Option<PlotThreshold>,
-    ) -> Result<(), Box<dyn Error>>
+    ) -> Result<(), Box<dyn Error + Send + Sync>>
     where
         KV: Clone + Debug,
         K: Display,

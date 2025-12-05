@@ -6,6 +6,8 @@ use prometheus_http_client::{
 use std::error::Error;
 use tracing::info;
 
+type BoxError = Box<dyn Error + Send + Sync>;
+
 #[cfg(feature = "plot")]
 mod plot;
 #[cfg(feature = "plot")]
@@ -52,7 +54,7 @@ impl Prometheus {
     pub async fn oneoff_query(
         &self,
         query: String,
-    ) -> Result<(ExtractLabels, Vec<Option<(f64, MetricVal)>>), Box<dyn Error>> {
+    ) -> Result<(ExtractLabels, Vec<Option<(f64, MetricVal)>>), BoxError> {
         info!("Prom query: {query}");
         let vector: Vec<MetricValue> = QueryRequest { query, time: None }
             .send_with_client(&self.reqwest_client, &self.config.prometheus_host)
@@ -69,7 +71,7 @@ impl Prometheus {
     pub async fn series(
         &self,
         matches: impl IntoIterator<Item: AsRef<str>>,
-    ) -> Result<Vec<Labels>, Box<dyn Error>> {
+    ) -> Result<Vec<Labels>, BoxError> {
         Ok(SeriesRequest {
             matches: matches.into_iter().map(|s| s.as_ref().to_owned()).collect(),
         }
@@ -81,7 +83,7 @@ impl Prometheus {
     pub async fn labels(
         &self,
         matches: impl IntoIterator<Item: AsRef<str>>,
-    ) -> Result<Vec<String>, Box<dyn Error>> {
+    ) -> Result<Vec<String>, BoxError> {
         Ok(LabelsRequest {
             matches: matches.into_iter().map(|s| s.as_ref().to_owned()).collect(),
         }
@@ -90,7 +92,7 @@ impl Prometheus {
     }
 
     /// Get the list of current alerts
-    pub async fn alerts(&self) -> Result<Vec<AlertInfo>, Box<dyn Error>> {
+    pub async fn alerts(&self) -> Result<Vec<AlertInfo>, BoxError> {
         Ok(AlertsRequest {}
             .send_with_client(&self.reqwest_client, &self.config.prometheus_host)
             .await?
@@ -106,7 +108,7 @@ impl Prometheus {
     }
 
     /// Create a new plot corresponding to a given alert. Returns a pathbuf if it is present
-    pub async fn create_alert_plot(&self, alert: &Alert) -> Result<PathBuf, Box<dyn Error>> {
+    pub async fn create_alert_plot(&self, alert: &Alert) -> Result<PathBuf, BoxError> {
         use chrono::{TimeDelta, Utc};
 
         let expr = alert.parse_expr_from_generator_url()?;
@@ -151,7 +153,7 @@ impl Prometheus {
         &self,
         query: String,
         since: Duration,
-    ) -> Result<PathBuf, Box<dyn Error>> {
+    ) -> Result<PathBuf, BoxError> {
         info!("Prom range query: {query}");
         let matrix = QueryRangeRequest::builder(query.to_owned())
             .since(since)
@@ -188,7 +190,7 @@ fn build_label_selector(
 ///
 /// Returns (base_query, threshold) where base_query is the part before the comparator.
 #[cfg(feature = "plot")]
-fn parse_alert_expr(expr: &str) -> Result<(String, PlotThreshold), Box<dyn std::error::Error>> {
+fn parse_alert_expr(expr: &str) -> Result<(String, PlotThreshold), BoxError> {
     // Look for comparison operators with surrounding spaces
     for comparator in [" < ", " > "] {
         if let Some(pos) = expr.find(comparator) {
