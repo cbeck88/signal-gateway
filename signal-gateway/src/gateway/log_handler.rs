@@ -1,7 +1,7 @@
+use super::circular_buffer::CircularBuffer;
 use super::{AdminMessage, MultiRateLimiter, Origin, RateThreshold, SourceLocationRateLimiter};
 use crate::human_duration::HumanTMinus;
 use chrono::{TimeDelta, Utc};
-use circular_buffer::CircularBuffer;
 use conf::Conf;
 use serde::Deserialize;
 use std::{fmt, time::Duration};
@@ -42,6 +42,9 @@ pub struct LogHandlerConfig {
     /// Structured data ID for tracing metadata (module, file, line) in syslog messages
     #[conf(long, env, default_value = "tracing-meta@64700")]
     pub sd_id: String,
+    /// Number of recent log messages to buffer per origin
+    #[conf(long, env, default_value = "64")]
+    pub log_buffer_size: usize,
 }
 
 /// Specifies both a rate limiting threshold, and criteria for the threshold to apply
@@ -107,7 +110,7 @@ impl AlertRule {
 pub struct LogHandler {
     config: LogHandlerConfig,
     admin_mq_tx: UnboundedSender<AdminMessage>,
-    syslog_buffer: Mutex<CircularBuffer<64, SyslogMessage>>,
+    syslog_buffer: Mutex<CircularBuffer<SyslogMessage>>,
     rate_limiters: Vec<(AlertRule, Mutex<MultiRateLimiter>)>,
     /// Rate limiter keyed by source location (file:line), so different error locations
     /// can alert independently without suppressing each other.
@@ -153,10 +156,12 @@ impl LogHandler {
             OVERALL_LIMITER_MAX_ENTRIES,
         ));
 
+        let syslog_buffer = Mutex::new(CircularBuffer::new(config.log_buffer_size));
+
         Self {
             config,
             admin_mq_tx,
-            syslog_buffer: Default::default(),
+            syslog_buffer,
             rate_limiters,
             overall_limiter,
             any_rule_uses_module,

@@ -10,7 +10,6 @@ workspace = true
 prom-client = { workspace = true }
 
 chrono = { workspace = true }
-circular-buffer = { workspace = true }
 conf = { workspace = true }
 conf-extra = { workspace = true }
 displaydoc = { workspace = true }
