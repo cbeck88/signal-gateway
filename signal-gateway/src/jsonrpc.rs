@@ -399,6 +399,7 @@ pub trait Rpc {
     fn version(&self) -> Result<Value, ErrorObjectOwned>;
 }
 
+#[allow(unused)]
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JsonLink {
@@ -411,6 +412,7 @@ pub struct RecvMessage {
     pub envelope: Envelope,
 }
 
+#[allow(unused)]
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Envelope {

@@ -1,8 +1,9 @@
 pub mod alertmanager;
 pub mod gateway;
-pub mod human_duration;
-pub mod jsonrpc;
-pub mod prometheus;
-pub mod transports;
+
+pub(crate) mod jsonrpc;
+pub(crate) mod human_duration;
+pub(crate) mod prometheus;
+pub(crate) mod transports;
 
 pub use gateway::{Gateway, GatewayConfig};

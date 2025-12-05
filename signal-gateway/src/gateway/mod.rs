@@ -6,7 +6,7 @@ use crate::{
 use tokio_util::bytes::Buf;
 use conf::{Conf, Subcommands};
 use futures_util::FutureExt;
-pub use http::{Method, Request, Response, StatusCode};
+use http::{Method, Request, Response, StatusCode};
 use http_body::Body;
 use http_body_util::BodyExt;
 use prometheus_http_client::{AlertStatus, ExtractLabels};
@@ -417,10 +417,18 @@ impl Gateway {
             resp
         }
 
-        match (req.method(), req.uri().path()) {
-            (&Method::GET, "/") => Ok(ok_resp()),
-            (&Method::GET, "/health") => Ok(ok_resp()),
-            (&Method::POST, "/alert") => {
+        match req.uri().path() {
+            "/" | "/health" | "/ready" => {
+                if !matches!(req.method(), Method::GET | Method::HEAD) {
+                    Ok(err_resp(StatusCode::UNIMPLEMENTED, "Use GET or HEAD with this route"))
+                } else {
+                    Ok(ok_resp())
+                }
+            },
+            "/alert" => {
+                if !matches!(req.method(), Method::POST) {
+                    return Ok(err_resp(StatusCode::UNIMPLEMENTED, "Use POST with this route"));
+                }
                 let v = req
                     .into_body()
                     .collect()
@@ -434,7 +442,7 @@ impl Gateway {
                 } else {
                     Ok(ok_resp())
                 }
-            }
+            },
             _ => Ok(err_resp(
                 StatusCode::NOT_FOUND,
                 format!("Not found '{} {}'", req.method(), req.uri().path()),
@@ -473,7 +481,7 @@ impl Gateway {
                 let prometheus = self
                     .prometheus
                     .as_ref()
-                    .ok_or_else(|| (500, "prometheus was not configured".into()))?;
+                    .ok_or_else(|| (501, "prometheus was not configured".into()))?;
 
                 match prometheus.oneoff_query(query).await {
                     Ok((
@@ -509,7 +517,7 @@ impl Gateway {
                 let prometheus = self
                     .prometheus
                     .as_ref()
-                    .ok_or_else(|| (500, "prometheus was not configured".into()))?;
+                    .ok_or_else(|| (501, "prometheus was not configured".into()))?;
 
                 prometheus.purge_old_plots();
                 match prometheus.create_oneoff_plot(query.clone(), duration).await {
@@ -519,13 +527,13 @@ impl Gateway {
             }
             #[cfg(not(feature = "plot"))]
             GatewayCommand::Plot { .. } => {
-                Err((500, "the plot feature was not enabled at build time".into()))
+                Err((501, "the plot feature was not enabled at build time".into()))
             }
             GatewayCommand::Series { matchers } => {
                 let prometheus = self
                     .prometheus
                     .as_ref()
-                    .ok_or_else(|| (500, "prometheus was not configured".into()))?;
+                    .ok_or_else(|| (501, "prometheus was not configured".into()))?;
 
                 let matcher_refs: Vec<&str> = matchers.iter().map(|s| s.as_str()).collect();
                 match prometheus.series(&matcher_refs).await {
@@ -546,7 +554,7 @@ impl Gateway {
                 let prometheus = self
                     .prometheus
                     .as_ref()
-                    .ok_or_else(|| (500, "prometheus was not configured".into()))?;
+                    .ok_or_else(|| (501, "prometheus was not configured".into()))?;
 
                 let matcher_refs: Vec<&str> = matchers.iter().map(|s| s.as_str()).collect();
                 match prometheus.labels(&matcher_refs).await {
@@ -567,7 +575,7 @@ impl Gateway {
                 let prometheus = self
                     .prometheus
                     .as_ref()
-                    .ok_or_else(|| (500, "prometheus was not configured".into()))?;
+                    .ok_or_else(|| (501, "prometheus was not configured".into()))?;
 
                 match prometheus.alerts().await {
                     Ok(data) => {
