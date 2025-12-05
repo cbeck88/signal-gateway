@@ -441,6 +441,16 @@ pub async fn connect_tcp(
     Ok(ClientBuilder::default().build_with_tokio(sender, receiver))
 }
 
+/// Connect to signal-cli over unix domain socket
+#[cfg(unix)]
+pub async fn connect_ipc(
+    path: impl AsRef<std::path::Path>,
+) -> Result<impl SubscriptionClientT, std::io::Error> {
+    let (sender, receiver) = super::transports::ipc::connect(path).await?;
+
+    Ok(ClientBuilder::default().build_with_tokio(sender, receiver))
+}
+
 impl Envelope {
     /// Send a read-receipt for an envelope
     pub async fn send_read_receipt(

@@ -5,6 +5,8 @@ use crate::{
     message_handler::{AdminMessageResponse, MessageHandler, MessageHandlerResult},
     prometheus::{Prometheus, PrometheusConfig},
 };
+#[cfg(unix)]
+use crate::jsonrpc::connect_ipc;
 use chrono::Utc;
 use conf::{Conf, Subcommands};
 use futures_util::FutureExt;
@@ -33,9 +35,19 @@ mod rate_limiter;
 use rate_limiter::{MultiRateLimiter, RateThreshold, SourceLocationRateLimiter};
 
 #[derive(Conf, Debug)]
+#[cfg_attr(
+    unix,
+    conf(one_of_fields(signal_cli_tcp_addr, signal_cli_socket_path))
+)]
+#[cfg_attr(not(unix), conf(one_of_fields(signal_cli_tcp_addr)))]
 pub struct GatewayConfig {
-    #[conf(long, env, default_value = "127.0.0.1:7583")]
-    pub signal_cli_tcp_addr: SocketAddr,
+    /// TCP address of signal-cli JSON-RPC server
+    #[conf(long, env)]
+    pub signal_cli_tcp_addr: Option<SocketAddr>,
+    /// Unix socket path of signal-cli JSON-RPC server
+    #[cfg(unix)]
+    #[conf(long, env)]
+    pub signal_cli_socket_path: Option<PathBuf>,
     #[conf(long, env)]
     pub signal_account: String,
     #[conf(repeat, long, env)]
@@ -187,24 +199,31 @@ impl Gateway {
             if self.token.is_cancelled() {
                 return;
             }
-            match connect_tcp(&self.config.signal_cli_tcp_addr).await {
-                Err(err) => {
-                    error!(
-                        "Could not connect to signal_cli @ ({}): {err}",
-                        self.config.signal_cli_tcp_addr
-                    );
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                }
-                Ok(client) => {
-                    if let Err(err) = self.do_run(&client).await {
-                        error!("Error with signal cli, reconnecting: {err}");
-                        tokio::time::sleep(Duration::from_secs(5)).await;
-                    } else {
-                        continue;
-                    }
-                }
+
+            if let Err(err) = self.connect_and_run().await {
+                error!("Error with signal-cli, reconnecting: {err}");
+                tokio::time::sleep(Duration::from_secs(5)).await;
             }
         }
+    }
+
+    /// Connect to signal-cli and run the main loop.
+    async fn connect_and_run(&self) -> Result<(), Box<dyn std::error::Error>> {
+        #[cfg(unix)]
+        if let Some(path) = &self.config.signal_cli_socket_path {
+            info!("Connecting to signal-cli via unix socket: {}", path.display());
+            let client = connect_ipc(path).await?;
+            return Ok(self.do_run(&client).await?);
+        }
+
+        if let Some(addr) = &self.config.signal_cli_tcp_addr {
+            info!("Connecting to signal-cli via TCP: {addr}");
+            let client = connect_tcp(addr).await?;
+            return Ok(self.do_run(&client).await?);
+        }
+
+        // This shouldn't happen due to one_of_fields validation
+        unreachable!("one_of_fields should ensure exactly one transport is configured")
     }
 
     async fn do_run(&self, signal_cli: &impl RpcClient) -> Result<(), RpcClientError> {

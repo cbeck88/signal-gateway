@@ -5,6 +5,8 @@ use jsonrpsee::core::client::{ReceivedMessage, TransportReceiverT, TransportSend
 use thiserror::Error;
 
 mod stream_codec;
+#[cfg(unix)]
+pub mod ipc;
 pub mod tcp;
 
 #[derive(Debug, Error)]
