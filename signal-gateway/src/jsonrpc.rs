@@ -440,6 +440,32 @@ pub struct GroupInfo {
     pub group_id: String,
 }
 
+/// Trust level for an identity
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum TrustLevel {
+    Untrusted,
+    TrustedUnverified,
+    TrustedVerified,
+}
+
+impl TrustLevel {
+    pub fn is_trusted(self) -> bool {
+        matches!(
+            self,
+            TrustLevel::TrustedUnverified | TrustLevel::TrustedVerified
+        )
+    }
+}
+
+/// Identity information returned by listIdentities
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Identity {
+    pub safety_number: String,
+    pub trust_level: TrustLevel,
+}
+
 /// Connect to signal-cli over tcp socket
 pub async fn connect_tcp(
     tcp: impl ToSocketAddrs,

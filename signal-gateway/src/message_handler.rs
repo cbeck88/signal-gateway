@@ -1,11 +1,6 @@
 //! Message handler types for admin messages not handled by the gateway.
 
-use std::{
-    error::Error,
-    future::Future,
-    path::PathBuf,
-    pin::Pin,
-};
+use std::{error::Error, future::Future, path::PathBuf, pin::Pin};
 
 /// Response to an admin message.
 #[non_exhaustive]

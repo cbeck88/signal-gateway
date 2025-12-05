@@ -4,9 +4,9 @@ use futures_util::{Sink, SinkExt, Stream, stream::StreamExt};
 use jsonrpsee::core::client::{ReceivedMessage, TransportReceiverT, TransportSenderT};
 use thiserror::Error;
 
-mod stream_codec;
 #[cfg(unix)]
 pub mod ipc;
+mod stream_codec;
 pub mod tcp;
 
 #[derive(Debug, Error)]

@@ -1,12 +1,14 @@
+#[cfg(unix)]
+use crate::jsonrpc::connect_ipc;
 use crate::{
     alertmanager::AlertPost,
-    jsonrpc::{Envelope, MessageTarget, RpcClient, RpcClientError, SignalMessage, connect_tcp},
+    jsonrpc::{
+        Envelope, Identity, MessageTarget, RpcClient, RpcClientError, SignalMessage, connect_tcp,
+    },
     log_message::{LogMessage, Origin},
     message_handler::{AdminMessageResponse, MessageHandler, MessageHandlerResult},
     prometheus::{Prometheus, PrometheusConfig},
 };
-#[cfg(unix)]
-use crate::jsonrpc::connect_ipc;
 use chrono::Utc;
 use conf::{Conf, Subcommands};
 use futures_util::FutureExt;
@@ -14,6 +16,7 @@ use http::{Method, Request, Response, StatusCode};
 use http_body::Body;
 use http_body_util::BodyExt;
 use prometheus_http_client::{AlertStatus, ExtractLabels};
+use std::time::Duration;
 use std::{collections::HashMap, fmt::Write, net::SocketAddr, path::PathBuf};
 use tokio::{
     join,
@@ -22,7 +25,6 @@ use tokio::{
         mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     },
 };
-use std::time::Duration;
 use tokio_util::bytes::Buf;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
@@ -35,10 +37,7 @@ mod rate_limiter;
 use rate_limiter::{MultiRateLimiter, RateThreshold, SourceLocationRateLimiter};
 
 #[derive(Conf, Debug)]
-#[cfg_attr(
-    unix,
-    conf(one_of_fields(signal_cli_tcp_addr, signal_cli_socket_path))
-)]
+#[cfg_attr(unix, conf(one_of_fields(signal_cli_tcp_addr, signal_cli_socket_path)))]
 #[cfg_attr(not(unix), conf(one_of_fields(signal_cli_tcp_addr)))]
 pub struct GatewayConfig {
     /// TCP address of signal-cli JSON-RPC server
@@ -50,8 +49,10 @@ pub struct GatewayConfig {
     pub signal_cli_socket_path: Option<PathBuf>,
     #[conf(long, env)]
     pub signal_account: String,
-    #[conf(repeat, long, env)]
-    pub admin_uuid: Vec<String>,
+    /// Admin UUIDs mapped to their safety numbers (can be empty).
+    /// Example: {"uuid1": ["12345...", "67890..."], "uuid2": []}
+    #[conf(long, env, value_parser = serde_json::from_str)]
+    pub admin_safety_numbers: HashMap<String, Vec<String>>,
     /// If set, alerts are sent to this group instead of individual admins
     #[conf(long, env)]
     pub alert_group_id: Option<String>,
@@ -59,6 +60,18 @@ pub struct GatewayConfig {
     pub prometheus: Option<PrometheusConfig>,
     #[conf(flatten)]
     pub log_handler: LogHandlerConfig,
+}
+
+impl GatewayConfig {
+    /// Check if a UUID is a registered admin
+    pub fn is_admin(&self, uuid: &str) -> bool {
+        self.admin_safety_numbers.contains_key(uuid)
+    }
+
+    /// Get all admin UUIDs
+    pub fn admin_uuids(&self) -> Vec<String> {
+        self.admin_safety_numbers.keys().cloned().collect()
+    }
 }
 
 /// Wrapper for parsing gateway commands
@@ -214,7 +227,10 @@ impl Gateway {
     async fn connect_and_run(&self) -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(unix)]
         if let Some(path) = &self.config.signal_cli_socket_path {
-            info!("Connecting to signal-cli via unix socket: {}", path.display());
+            info!(
+                "Connecting to signal-cli via unix socket: {}",
+                path.display()
+            );
             let client = connect_ipc(path).await?;
             return Ok(self.do_run(&client).await?);
         }
@@ -229,7 +245,107 @@ impl Gateway {
         unreachable!("one_of_fields should ensure exactly one transport is configured")
     }
 
+    /// Update trust for admins with safety numbers configured.
+    ///
+    /// For each admin with safety numbers:
+    /// 1. Check current identities in signal-cli via listIdentities
+    /// 2. If any trusted identity is NOT in our config, remove the contact entirely and re-add only configured ones
+    /// 3. Otherwise, just trust any new safety numbers from config that aren't already trusted
+    async fn update_trust(&self, signal_cli: &impl RpcClient) {
+        for (uuid, safety_numbers) in &self.config.admin_safety_numbers {
+            if safety_numbers.is_empty() {
+                continue;
+            }
+
+            // Get current identities from signal-cli
+            let current_identities: Vec<Identity> = match signal_cli
+                .list_identities(Some(self.config.signal_account.clone()), Some(uuid.clone()))
+                .await
+            {
+                Ok(value) => serde_json::from_value(value).unwrap_or_default(),
+                Err(err) => {
+                    debug!("Could not list identities for {uuid} (may not exist yet): {err}");
+                    Vec::new()
+                }
+            };
+
+            // Check if any trusted identity in signal-cli is NOT in our config
+            let has_revoked_identity = current_identities.iter().any(|id| {
+                id.trust_level.is_trusted() && !safety_numbers.contains(&id.safety_number)
+            });
+
+            if has_revoked_identity {
+                // Log which identities are being revoked
+                for id in &current_identities {
+                    if id.trust_level.is_trusted() && !safety_numbers.contains(&id.safety_number) {
+                        warn!(
+                            "Revoking trust for admin {uuid}: safety number {} is trusted but not in config",
+                            id.safety_number
+                        );
+                    }
+                }
+
+                // Remove contact to clear all existing trust
+                info!("Resetting trust for admin {uuid}");
+                if let Err(err) = signal_cli
+                    .remove_contact(
+                        Some(self.config.signal_account.clone()),
+                        uuid.clone(),
+                        true,  // forget - delete identity keys and sessions
+                        false, // hide
+                    )
+                    .await
+                {
+                    error!("Failed to remove contact {uuid}: {err}");
+                    continue;
+                }
+
+                // Re-add all configured safety numbers
+                for safety_number in safety_numbers {
+                    info!("Trusting safety number for admin {uuid}");
+                    if let Err(err) = signal_cli
+                        .trust(
+                            Some(self.config.signal_account.clone()),
+                            uuid.clone(),
+                            false,
+                            Some(safety_number.clone()),
+                        )
+                        .await
+                    {
+                        error!("Failed to trust admin {uuid}: {err}");
+                    }
+                }
+            } else {
+                // Just add any new safety numbers that aren't already trusted
+                let already_trusted: Vec<_> = current_identities
+                    .iter()
+                    .filter(|id| id.trust_level.is_trusted())
+                    .map(|id| &id.safety_number)
+                    .collect();
+
+                for safety_number in safety_numbers {
+                    if !already_trusted.contains(&safety_number) {
+                        info!("Trusting new safety number for admin {uuid}");
+                        if let Err(err) = signal_cli
+                            .trust(
+                                Some(self.config.signal_account.clone()),
+                                uuid.clone(),
+                                false,
+                                Some(safety_number.clone()),
+                            )
+                            .await
+                        {
+                            error!("Failed to trust admin {uuid}: {err}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     async fn do_run(&self, signal_cli: &impl RpcClient) -> Result<(), RpcClientError> {
+        self.update_trust(signal_cli).await;
+
         let mut admin_mq_rx = self
             .admin_mq_rx
             .try_lock()
@@ -263,7 +379,7 @@ impl Gateway {
                         let target = if let Some(group_id) = &self.config.alert_group_id {
                             MessageTarget::Group(group_id.clone())
                         } else {
-                            MessageTarget::Recipients(self.config.admin_uuid.clone())
+                            MessageTarget::Recipients(self.config.admin_uuids())
                         };
                         SignalMessage {
                             sender: self.config.signal_account.clone(),
@@ -297,9 +413,8 @@ impl Gateway {
                             // Determine if this message came from a group
                             let from_group = data_message.group_info.as_ref().map(|g| g.group_id.clone());
 
-                            // For group messages, check if sender is an admin
-                            // For direct messages, check if sender is an admin
-                            if !self.config.admin_uuid.contains(&msg.envelope.source_uuid) {
+                            // Check if sender is an admin
+                            if !self.config.is_admin(&msg.envelope.source_uuid) {
                                 warn!("Ignoring message from non-admin: {msg:?}");
                                 continue;
                             }
