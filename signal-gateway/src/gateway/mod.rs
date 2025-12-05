@@ -471,7 +471,12 @@ impl Gateway {
 
             self.handle_gateway_command(cmd).await
         } else if let Some(handler) = &self.message_handler {
-            let msg = VerifiedSignalMessage::new(data.message.clone(), data.timestamp);
+            let msg = VerifiedSignalMessage {
+                message: data.message.clone(),
+                timestamp: data.timestamp,
+                sender_uuid: msg.source_uuid.clone(),
+                group_id: data.group_info.as_ref().map(|g| g.group_id.clone()),
+            };
             handler.handle_verified_signal_message(msg, &GatewayContext).await
         } else {
             Err((501u16, "No message handler configured".into()))

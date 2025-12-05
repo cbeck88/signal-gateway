@@ -14,16 +14,10 @@ pub struct VerifiedSignalMessage {
     pub message: String,
     /// The timestamp of the message (milliseconds since Unix epoch).
     pub timestamp: u64,
-}
-
-impl VerifiedSignalMessage {
-    /// Create a new verified signal message.
-    pub fn new(message: impl Into<String>, timestamp: u64) -> Self {
-        Self {
-            message: message.into(),
-            timestamp,
-        }
-    }
+    /// The UUID of the sender.
+    pub sender_uuid: String,
+    /// The group ID if this message was sent to a group.
+    pub group_id: Option<String>,
 }
 
 /// Context for message handler operations.
