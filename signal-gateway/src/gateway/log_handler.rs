@@ -1,11 +1,13 @@
 use super::circular_buffer::CircularBuffer;
-use super::{AdminMessage, MultiRateLimiter, Origin, RateThreshold, SourceLocationRateLimiter};
-use crate::human_duration::HumanTMinus;
+use super::{AdminMessage, MultiRateLimiter, RateThreshold, SourceLocationRateLimiter};
+use crate::{
+    human_duration::HumanTMinus,
+    log_message::{Level, LogMessage, Origin},
+};
 use chrono::{TimeDelta, Utc};
 use conf::Conf;
 use serde::Deserialize;
 use std::{fmt, time::Duration};
-use syslog_rfc5424::{SyslogMessage, SyslogSeverity};
 use tokio::sync::{Mutex, mpsc::UnboundedSender};
 use tracing::{error, info, warn};
 
@@ -14,7 +16,7 @@ enum SuppressionReason {
     /// Suppressed by a configured alert rule (with 0-based rule index)
     Rule(usize),
     /// Suppressed by the source-location rate limiter
-    SourceLocation { file: String, line: String },
+    SourceLocation { file: Box<str>, line: Box<str> },
 }
 
 impl fmt::Display for SuppressionReason {
@@ -39,9 +41,6 @@ pub struct LogHandlerConfig {
     pub format_module: bool,
     #[conf(long, env)]
     pub format_source_location: bool,
-    /// Structured data ID for tracing metadata (module, file, line) in syslog messages
-    #[conf(long, env, default_value = "tracing-meta@64700")]
-    pub sd_id: String,
     /// Number of recent log messages to buffer per origin
     #[conf(long, env, default_value = "64")]
     pub log_buffer_size: usize,
@@ -63,28 +62,28 @@ pub struct AlertRule {
 }
 
 impl AlertRule {
-    /// Check if a syslog message passes the filter defined by this rule
-    fn eval_filter(&self, syslog_msg: &SyslogMessage, sd_id: &str) -> bool {
-        if !self.msg_contains.is_empty() && !syslog_msg.msg.contains(&self.msg_contains) {
+    /// Check if a log message passes the filter defined by this rule
+    fn eval_filter(&self, log_msg: &LogMessage) -> bool {
+        if !self.msg_contains.is_empty() && !log_msg.msg.contains(&self.msg_contains) {
             return false;
         }
 
         if !self.module_equals.is_empty() {
-            match syslog_msg.sd.find_tuple(sd_id, "module") {
+            match log_msg.module_path.as_deref() {
                 Some(module) if module == self.module_equals.as_str() => {}
                 _ => return false,
             }
         }
 
         if !self.file_equals.is_empty() {
-            match syslog_msg.sd.find_tuple(sd_id, "file") {
+            match log_msg.file.as_deref() {
                 Some(file) if file == self.file_equals.as_str() => {}
                 _ => return false,
             }
         }
 
         if !self.line_equals.is_empty() {
-            match syslog_msg.sd.find_tuple(sd_id, "line") {
+            match log_msg.line.as_deref() {
                 Some(line) if line == self.line_equals.as_str() => {}
                 _ => return false,
             }
@@ -110,7 +109,7 @@ impl AlertRule {
 pub struct LogHandler {
     config: LogHandlerConfig,
     admin_mq_tx: UnboundedSender<AdminMessage>,
-    syslog_buffer: Mutex<CircularBuffer<SyslogMessage>>,
+    log_buffer: Mutex<CircularBuffer<LogMessage>>,
     rate_limiters: Vec<(AlertRule, Mutex<MultiRateLimiter>)>,
     /// Rate limiter keyed by source location (file:line), so different error locations
     /// can alert independently without suppressing each other.
@@ -156,12 +155,12 @@ impl LogHandler {
             OVERALL_LIMITER_MAX_ENTRIES,
         ));
 
-        let syslog_buffer = Mutex::new(CircularBuffer::new(config.log_buffer_size));
+        let log_buffer = Mutex::new(CircularBuffer::new(config.log_buffer_size));
 
         Self {
             config,
             admin_mq_tx,
-            syslog_buffer,
+            log_buffer,
             rate_limiters,
             overall_limiter,
             any_rule_uses_module,
@@ -172,7 +171,7 @@ impl LogHandler {
 
     /// Format recent logs into a string
     pub async fn format_logs(&self) -> String {
-        let lk = self.syslog_buffer.lock().await;
+        let lk = self.log_buffer.lock().await;
 
         let mut text = format!("{} log messages (newest first):\n", lk.len());
 
@@ -181,28 +180,28 @@ impl LogHandler {
 
         // Collect and reverse to show newest first
         let messages: Vec<_> = lk.iter().collect();
-        for syslog_msg in messages.into_iter().rev() {
-            self.write_syslog_msg(&mut text, syslog_msg, now);
+        for log_msg in messages.into_iter().rev() {
+            self.write_log_msg(&mut text, log_msg, now);
         }
         text
     }
 
-    /// Consume a new syslog message from the given origin
-    pub async fn handle_syslog_message(&self, mut syslog_msg: SyslogMessage, origin: Origin) {
-        let suppression_reason = self.check_suppression(&mut syslog_msg).await;
+    /// Consume a new log message from the given origin
+    pub async fn handle_log_message(&self, mut log_msg: LogMessage, origin: Origin) {
+        let suppression_reason = self.check_suppression(&mut log_msg).await;
         if let Some(reason) = &suppression_reason
-            && syslog_msg.severity <= SyslogSeverity::SEV_ERR
+            && log_msg.level <= Level::ERROR
         {
-            let sev = Self::severity_to_str(syslog_msg.severity);
-            info!("Suppressed {sev} ({reason}):\n{}", syslog_msg.msg);
+            let sev = log_msg.level.to_str();
+            info!("Suppressed {sev} ({reason}):\n{}", log_msg.msg);
         }
 
         // Record this new message.
         // Then, if we should alert now, also format the whole buffer to a string,
         // and then release the lock.
         let formatted_text = {
-            let mut lk = self.syslog_buffer.lock().await;
-            lk.push_back(syslog_msg);
+            let mut lk = self.log_buffer.lock().await;
+            lk.push_back(log_msg);
             if suppression_reason.is_some() {
                 return;
             }
@@ -213,8 +212,8 @@ impl LogHandler {
             let now = Utc::now().timestamp();
 
             // Iterate in reverse (newest first) without copying
-            for syslog_msg in lk.iter().rev() {
-                self.write_syslog_msg(&mut text, syslog_msg, now);
+            for log_msg in lk.iter().rev() {
+                self.write_log_msg(&mut text, log_msg, now);
             }
             lk.clear();
 
@@ -231,32 +230,13 @@ impl LogHandler {
         }
     }
 
-    // Convert SyslogSeverity to our own all-caps string that fits in 5 chars
-    fn severity_to_str(severity: SyslogSeverity) -> &'static str {
-        match severity {
-            SyslogSeverity::SEV_EMERG => "EMERG",
-            SyslogSeverity::SEV_ALERT => "ALERT",
-            SyslogSeverity::SEV_CRIT => "CRIT",
-            SyslogSeverity::SEV_ERR => "ERROR",
-            SyslogSeverity::SEV_WARNING => "WARN",
-            SyslogSeverity::SEV_NOTICE => "NOTE",
-            SyslogSeverity::SEV_INFO => "INFO",
-            SyslogSeverity::SEV_DEBUG => "DEBUG",
-        }
-    }
-
-    // Format a syslog message into a Writer, followed by \n, and using any config options to do so
-    fn write_syslog_msg(
-        &self,
-        mut writer: impl std::fmt::Write,
-        syslog_msg: &SyslogMessage,
-        now: i64,
-    ) {
-        let sev = Self::severity_to_str(syslog_msg.severity);
-        let msg = &syslog_msg.msg;
+    // Format a log message into a Writer, followed by \n, and using any config options to do so
+    fn write_log_msg(&self, mut writer: impl std::fmt::Write, log_msg: &LogMessage, now: i64) {
+        let sev = log_msg.level.to_str();
+        let msg = &log_msg.msg;
 
         // Format relative timestamp if available
-        let time_str = if let Some(ts) = syslog_msg.timestamp {
+        let time_str = if let Some(ts) = log_msg.timestamp {
             let diff_secs = now.saturating_sub(ts);
             HumanTMinus(TimeDelta::seconds(diff_secs)).to_string()
         } else {
@@ -264,18 +244,17 @@ impl LogHandler {
         };
 
         // Extract metadata from structured data if configured
-        let sd_id = &self.config.sd_id;
         let mut metadata_parts = Vec::new();
 
         if self.config.format_module
-            && let Some(module) = syslog_msg.sd.find_tuple(sd_id, "module")
+            && let Some(module) = log_msg.module_path.as_ref()
         {
             metadata_parts.push(module.to_string());
         }
 
         if self.config.format_source_location {
-            let file_opt = syslog_msg.sd.find_tuple(sd_id, "file");
-            let line_opt = syslog_msg.sd.find_tuple(sd_id, "line");
+            let file_opt = log_msg.file.as_ref();
+            let line_opt = log_msg.line.as_ref();
 
             let location = if let Some(file) = file_opt {
                 // Strip /home/{username}/ prefix if present
@@ -306,37 +285,35 @@ impl LogHandler {
         };
 
         if let Err(err) = result {
-            error!("Couldn't write syslog message ({err}): {sev}: {msg}");
+            error!("Couldn't write log message ({err}): {sev}: {msg}");
         }
     }
 
     /// Check if an alert should be suppressed for a given error message.
     ///
     /// Returns `None` if the alert should fire, or `Some(reason)` if suppressed.
-    async fn check_suppression(&self, syslog_msg: &mut SyslogMessage) -> Option<SuppressionReason> {
-        let ts_sec = *syslog_msg
+    async fn check_suppression(&self, log_msg: &mut LogMessage) -> Option<SuppressionReason> {
+        let ts_sec = *log_msg
             .timestamp
             .get_or_insert_with(|| Utc::now().timestamp());
 
-        let high_severity = syslog_msg.severity <= SyslogSeverity::SEV_ERR;
+        let high_severity = log_msg.level <= Level::ERROR;
         if !high_severity {
             // Low severity messages are always "suppressed" (not alerted on)
             // but we don't need to log a reason for this
             return Some(SuppressionReason::Rule(usize::MAX));
         }
 
-        let sd_id = &self.config.sd_id;
-
         // Warn if rules expect structured data but the message doesn't have it
-        let has_module = syslog_msg.sd.find_tuple(sd_id, "module").is_some();
-        let has_file = syslog_msg.sd.find_tuple(sd_id, "file").is_some();
-        let has_line = syslog_msg.sd.find_tuple(sd_id, "line").is_some();
+        let has_module = log_msg.module_path.is_some();
+        let has_file = log_msg.file.is_some();
+        let has_line = log_msg.line.is_some();
         if (self.any_rule_uses_module && !has_module)
             || (self.any_rule_uses_file && !has_file)
             || (self.any_rule_uses_line && !has_line)
         {
             warn!(
-                "Error message missing structured data (sd_id={sd_id}), filtering rules may not work: {syslog_msg:#?}"
+                "Log message missing source location data, filtering rules may not work: {log_msg:#?}"
             );
         }
 
@@ -344,7 +321,7 @@ impl LogHandler {
         // Note: we check all rules even if one already suppressed, to update all rate limiters
         let mut suppressed_by_rule: Option<usize> = None;
         for (idx, (filter, limiter)) in self.rate_limiters.iter().enumerate() {
-            if filter.eval_filter(syslog_msg, sd_id) && !limiter.lock().await.evaluate(ts_sec) {
+            if filter.eval_filter(log_msg) && !limiter.lock().await.evaluate(ts_sec) {
                 suppressed_by_rule.get_or_insert(idx);
             }
         }
@@ -353,14 +330,8 @@ impl LogHandler {
         }
 
         // Extract source location for per-location rate limiting
-        let file = syslog_msg
-            .sd
-            .find_tuple(sd_id, "file")
-            .map_or("?", |s| s.as_str());
-        let line = syslog_msg
-            .sd
-            .find_tuple(sd_id, "line")
-            .map_or("?", |s| s.as_str());
+        let file = log_msg.file.as_deref().unwrap_or("?");
+        let line = log_msg.line.as_deref().unwrap_or("?");
 
         if !self
             .overall_limiter
@@ -369,8 +340,8 @@ impl LogHandler {
             .evaluate(file, line, ts_sec)
         {
             return Some(SuppressionReason::SourceLocation {
-                file: file.to_owned(),
-                line: line.to_owned(),
+                file: file.into(),
+                line: line.into(),
             });
         }
 

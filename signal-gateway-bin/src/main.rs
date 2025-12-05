@@ -2,13 +2,61 @@ use conf::Conf;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use hyper_util::server::conn::auto;
-use signal_gateway::{Gateway, GatewayConfig};
+use signal_gateway::{Gateway, GatewayConfig, Level, LogMessage};
 use std::{net::SocketAddr, str::FromStr, sync::Arc, time::Duration};
-use syslog_rfc5424::SyslogMessage;
+use syslog_rfc5424::{SyslogMessage, SyslogSeverity};
 use tokio::net::{TcpListener, UdpSocket};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
+
+/// Convert SyslogSeverity to our Level enum
+fn severity_to_level(sev: SyslogSeverity) -> Level {
+    match sev {
+        SyslogSeverity::SEV_EMERG => Level::EMERGENCY,
+        SyslogSeverity::SEV_ALERT => Level::ALERT,
+        SyslogSeverity::SEV_CRIT => Level::CRITICAL,
+        SyslogSeverity::SEV_ERR => Level::ERROR,
+        SyslogSeverity::SEV_WARNING => Level::WARNING,
+        SyslogSeverity::SEV_NOTICE => Level::NOTICE,
+        SyslogSeverity::SEV_INFO => Level::INFO,
+        SyslogSeverity::SEV_DEBUG => Level::DEBUG,
+    }
+}
+
+/// Convert a SyslogMessage to a LogMessage, extracting structured data for tracing metadata
+fn syslog_to_log_message(msg: SyslogMessage, sd_id: &str) -> LogMessage {
+    let level = severity_to_level(msg.severity);
+    let mut builder = LogMessage::builder(level, msg.msg);
+
+    if let Some(ts) = msg.timestamp {
+        builder = builder.timestamp(ts);
+    }
+    if let Some(nanos) = msg.timestamp_nanos {
+        builder = builder.timestamp_nanos(nanos);
+    }
+    if let Some(hostname) = msg.hostname {
+        builder = builder.hostname(hostname);
+    }
+    if let Some(appname) = msg.appname {
+        builder = builder.appname(appname);
+    }
+
+    // Extract tracing metadata from structured data
+    if let Some(sd_element) = msg.sd.find_sdid(sd_id) {
+        if let Some(module) = sd_element.get("module") {
+            builder = builder.module_path(module.clone());
+        }
+        if let Some(file) = sd_element.get("file") {
+            builder = builder.file(file.clone());
+        }
+        if let Some(line) = sd_element.get("line") {
+            builder = builder.line(line.clone());
+        }
+    }
+
+    builder.build()
+}
 
 #[derive(Conf, Debug)]
 struct Config {
@@ -21,6 +69,9 @@ struct Config {
     /// Socket to listen for UDP messages, in syslog RFC 5424 format
     #[conf(long, env, default_value = "0.0.0.0:5424")]
     udp_listen_addr: SocketAddr,
+    /// Structured data ID for tracing metadata (module, file, line) in syslog messages
+    #[conf(long, env, default_value = "tracing-meta@64700")]
+    sd_id: String,
     #[conf(flatten)]
     gateway: GatewayConfig,
 }
@@ -85,7 +136,7 @@ async fn main() {
 
     // Start the two server tasks
     let _http_task = start_http_task(listener, gateway.clone());
-    let _udp_task = start_udp_task(udp_socket, gateway.clone());
+    let _udp_task = start_udp_task(udp_socket, gateway.clone(), config.sd_id);
 
     // Run gateway task and block on it returning. Note that it exits if the token is canceled.
     gateway.run().await;
@@ -128,8 +179,12 @@ fn start_http_task(listener: TcpListener, gateway: Arc<Gateway>) -> tokio::task:
     })
 }
 
-fn start_udp_task(udp_socket: UdpSocket, gateway: Arc<Gateway>) -> tokio::task::JoinHandle<()> {
-    // Loop waiting for http incoming connections, and pass them to gateway
+fn start_udp_task(
+    udp_socket: UdpSocket,
+    gateway: Arc<Gateway>,
+    sd_id: String,
+) -> tokio::task::JoinHandle<()> {
+    // Loop waiting for UDP syslog messages
     tokio::task::spawn(async move {
         let mut buf = vec![0u8; 8192];
         loop {
@@ -147,13 +202,14 @@ fn start_udp_task(udp_socket: UdpSocket, gateway: Arc<Gateway>) -> tokio::task::
                 continue;
             };
 
-            let Ok(msg) = SyslogMessage::from_str(text)
+            let Ok(syslog_msg) = SyslogMessage::from_str(text)
                 .inspect_err(|err| error!("UDP packet was not valid syslog: {err}:\n{text}"))
             else {
                 continue;
             };
 
-            gateway.handle_syslog_message(msg).await;
+            let log_msg = syslog_to_log_message(syslog_msg, &sd_id);
+            gateway.handle_log_message(log_msg).await;
         }
     })
 }

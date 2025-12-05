@@ -1,6 +1,7 @@
 use crate::{
     alertmanager::AlertPost,
     jsonrpc::{Envelope, RpcClient, RpcClientError, SignalMessage, connect_tcp},
+    log_message::{LogMessage, Origin},
     prometheus::{Prometheus, PrometheusConfig},
 };
 use chrono::Utc;
@@ -13,7 +14,6 @@ use prometheus_http_client::{AlertStatus, ExtractLabels};
 use std::{
     collections::HashMap, error::Error, fmt::Write, net::SocketAddr, path::PathBuf, time::Duration,
 };
-use syslog_rfc5424::SyslogMessage;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     join,
@@ -125,47 +125,6 @@ fn parse_gateway_command(s: &str) -> Result<GatewayCommand, String> {
     GatewayCommandWrapper::try_parse_from::<&str, &str, &str>(args, vec![])
         .map(|wrapper| wrapper.command)
         .map_err(|e| e.to_string())
-}
-
-/// Identifies the source of log messages (app name + host).
-/// Used to separate log buffers and rate limiters per source.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Origin {
-    pub app: String,
-    pub host: String,
-}
-
-impl std::fmt::Display for Origin {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}@{}", self.app, self.host)
-    }
-}
-
-impl From<&SyslogMessage> for Origin {
-    fn from(msg: &SyslogMessage) -> Self {
-        Self {
-            app: msg.appname.clone().unwrap_or_default(),
-            host: msg.hostname.clone().unwrap_or_default(),
-        }
-    }
-}
-
-impl Origin {
-    /// Check if this origin matches a filter string.
-    ///
-    /// If the filter contains '@', it is split on the first '@':
-    /// - The part before '@' must be a substring of `app`
-    /// - The part after '@' must be a substring of `host`
-    ///
-    /// If the filter does not contain '@', it matches if either `app` or `host`
-    /// contains the filter string.
-    pub fn matches_filter(&self, filter: &str) -> bool {
-        if let Some((app_filter, host_filter)) = filter.split_once('@') {
-            self.app.contains(app_filter) && self.host.contains(host_filter)
-        } else {
-            self.app.contains(filter) || self.host.contains(filter)
-        }
-    }
 }
 
 /// A message queued to be sent to all admins.
@@ -725,14 +684,15 @@ impl Gateway {
         Ok(text)
     }
 
-    pub async fn handle_syslog_message(&self, syslog_msg: SyslogMessage) {
-        let origin = Origin::from(&syslog_msg);
+    pub async fn handle_log_message(&self, log_msg: impl Into<LogMessage>) {
+        let log_msg = log_msg.into();
+        let origin = Origin::from(&log_msg);
 
         // Try to get existing handler with read lock first
         {
             let handlers = self.log_handlers.read().await;
             if let Some(handler) = handlers.get(&origin) {
-                handler.handle_syslog_message(syslog_msg, origin).await;
+                handler.handle_log_message(log_msg, origin).await;
                 return;
             }
         }
@@ -744,7 +704,7 @@ impl Gateway {
             info!("Creating new log handler for origin: {origin}");
             LogHandler::new(self.config.log_handler.clone(), self.admin_mq_tx.clone())
         });
-        handler.handle_syslog_message(syslog_msg, origin).await;
+        handler.handle_log_message(log_msg, origin).await;
     }
 }
 
@@ -854,8 +814,8 @@ mod tests {
     #[test]
     fn test_origin_matches_filter() {
         let origin = Origin {
-            app: "muad-dib".to_string(),
-            host: "tokyo-server".to_string(),
+            app: "muad-dib".into(),
+            host: "tokyo-server".into(),
         };
 
         // Without @: matches if app OR host contains the string
@@ -879,8 +839,8 @@ mod tests {
 
         // Edge case: filter matches the @ in the format but origin has no @
         let origin2 = Origin {
-            app: "app".to_string(),
-            host: "host".to_string(),
+            app: "app".into(),
+            host: "host".into(),
         };
         assert!(origin2.matches_filter("app@host"));
         assert!(!origin2.matches_filter("app@other"));
