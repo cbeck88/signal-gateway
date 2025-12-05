@@ -4,13 +4,6 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 pub fn init_logging() {
-    // Install rustls crypto provider before any TLS connections are made.
-    // This is needed because we have both aws-lc-rs and ring in our dependency tree,
-    // and rustls 0.23 can't auto-detect which one to use when both are present.
-    rustls::crypto::aws_lc_rs::default_provider()
-        .install_default()
-        .expect("Failed to install rustls crypto provider");
-
     // Build a default tracing subscriber, writing to STDERR
     // Uses RUST_LOG env var for filtering, defaults to "info" if not set
     tracing_subscriber::fmt()
