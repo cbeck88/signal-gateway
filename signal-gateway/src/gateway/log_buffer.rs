@@ -41,18 +41,19 @@ impl LogBuffer {
         buf.clear();
     }
 
-    /// Iterate over all messages without modifying the buffer.
+    /// Access the buffer contents via an iterator.
     ///
-    /// Messages are passed to `f` in reverse order (newest first).
-    pub fn for_each(&self, mut f: impl FnMut(&LogMessage)) {
+    /// The iterator yields messages in reverse order (newest first) and
+    /// implements `ExactSizeIterator`, so `iter.len()` returns the count.
+    // NOTE: We use `&mut dyn ExactSizeIterator` rather than `impl FnOnce(impl ExactSizeIterator)`
+    // because Rust doesn't allow nested `impl Trait` in that position. A generic parameter
+    // `F: FnOnce(I) where I: ExactSizeIterator` doesn't work either because `I` would be
+    // caller-determined, but we need to pass our concrete iterator type. HRTB with the
+    // concrete type (`F: for<'a> FnOnce(Rev<vec_deque::Iter<'a, T>>)`) works but leaks
+    // implementation details.
+    pub fn with_iter<R>(&self, f: impl FnOnce(&mut dyn ExactSizeIterator<Item = &LogMessage>) -> R) -> R {
         let buf = self.buf.lock().unwrap();
-        for log_msg in buf.iter().rev() {
-            f(log_msg);
-        }
-    }
-
-    /// Returns the number of messages currently in the buffer.
-    pub fn len(&self) -> usize {
-        self.buf.lock().unwrap().len()
+        let mut iter = buf.iter().rev();
+        f(&mut iter)
     }
 }

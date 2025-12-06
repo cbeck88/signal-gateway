@@ -39,6 +39,7 @@ impl<T> CircularBuffer<T> {
     }
 
     /// Returns the number of elements in the buffer.
+    #[allow(unused)]
     pub fn len(&self) -> usize {
         self.buf.len()
     }
@@ -56,7 +57,7 @@ impl<T> CircularBuffer<T> {
     }
 
     /// Returns an iterator over the elements, from oldest to newest.
-    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &T> {
+    pub fn iter(&self) -> impl DoubleEndedIterator<Item = &T> + ExactSizeIterator {
         self.buf.iter()
     }
 

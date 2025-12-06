@@ -129,10 +129,11 @@ impl LogHandler {
 
                     use std::fmt::Write;
                     writeln!(&mut text, "=== [{origin}] ===").unwrap();
-                    writeln!(&mut text, "{} log messages (newest first):", buffer.len()).unwrap();
-
-                    buffer.for_each(|log_msg| {
-                        self.write_log_msg(&mut text, log_msg, now);
+                    buffer.with_iter(|iter| {
+                        writeln!(&mut text, "{} log messages (newest first):", iter.len()).unwrap();
+                        for log_msg in iter {
+                            self.write_log_msg(&mut text, log_msg, now);
+                        }
                     });
                     text.push('\n');
                 }
