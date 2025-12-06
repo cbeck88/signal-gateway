@@ -110,11 +110,10 @@ impl Limiter {
 
     /// Create a source-location limiter from a threshold.
     ///
-    /// Note: Only the duration is used; source-location limiters allow one event
-    /// per location per window.
+    /// Each source location (file:line) gets its own rate limiter with the full threshold.
     pub fn source_location(threshold: RateThreshold) -> Self {
         Limiter::SourceLocation(SourceLocationRateLimiter::new(
-            threshold.duration,
+            threshold,
             SOURCE_LOCATION_MAX_ENTRIES,
         ))
     }
@@ -162,22 +161,23 @@ fn store_max(val: i64, at: &AtomicI64) {
 /// A rate limiter that tracks alerts per source location (file:line).
 ///
 /// This allows different error locations to alert independently, preventing one noisy
-/// error from suppressing alerts from completely different code paths.
+/// error from suppressing alerts from completely different code paths. Each location
+/// gets its own `MultiRateLimiter` with the full threshold.
 #[derive(Debug)]
 pub struct SourceLocationRateLimiter {
-    /// Maps (file, line) -> last alert timestamp
-    last_timestamps: HashMap<(String, String), i64>,
-    /// The rate limiting window in seconds
-    window: i64,
+    /// Maps (file, line) -> rate limiter for that location
+    limiters: HashMap<(String, String), MultiRateLimiter>,
+    /// Threshold for creating new limiters
+    threshold: RateThreshold,
     /// Maximum entries before triggering cleanup
     max_entries: usize,
 }
 
 impl SourceLocationRateLimiter {
-    pub fn new(window: Duration, max_entries: usize) -> Self {
+    pub fn new(threshold: RateThreshold, max_entries: usize) -> Self {
         Self {
-            last_timestamps: HashMap::new(),
-            window: window.as_secs().try_into().unwrap(),
+            limiters: HashMap::new(),
+            threshold,
             max_entries,
         }
     }
@@ -185,31 +185,31 @@ impl SourceLocationRateLimiter {
     /// Check if an error from this source location should trigger an alert.
     ///
     /// Returns true if the alert should fire (not rate-limited), false if suppressed.
-    /// Updates the stored timestamp if the alert fires.
     pub fn evaluate(&mut self, file: &str, line: &str, ts_sec: i64) -> bool {
         let key = (file.to_owned(), line.to_owned());
 
-        if let Some(&last_ts) = self.last_timestamps.get(&key)
-            && ts_sec - last_ts < self.window
-        {
-            return false; // Rate limited
-        }
+        let limiter = self
+            .limiters
+            .entry(key)
+            .or_insert_with(|| MultiRateLimiter::from(self.threshold));
 
-        // Alert should fire - update timestamp
-        self.last_timestamps.insert(key, ts_sec);
+        let result = limiter.evaluate(ts_sec);
 
         // Clean up if we've exceeded max entries
-        if self.last_timestamps.len() > self.max_entries {
+        if self.limiters.len() > self.max_entries {
             self.cleanup(ts_sec);
         }
 
-        true
+        result
     }
 
-    /// Remove entries older than the window
+    /// Remove entries where all timestamps are older than the window
     fn cleanup(&mut self, now: i64) {
-        self.last_timestamps
-            .retain(|_, &mut ts| now - ts < self.window);
+        let window = self.threshold.duration.as_secs() as i64;
+        self.limiters.retain(|_, limiter| {
+            // Keep if any timestamp is recent enough
+            limiter.timestamps.iter().any(|&ts| now - ts < window)
+        });
     }
 }
 
@@ -286,54 +286,96 @@ mod tests {
 
     #[test]
     fn source_location_rate_limiter_basic() {
-        let mut limiter = SourceLocationRateLimiter::new(Duration::from_secs(600), 100);
+        // Threshold: 1 event per 600 seconds per location
+        // Returns true when there's at least 1 event in the window
+        let threshold = RateThreshold {
+            times: 1,
+            duration: Duration::from_secs(600),
+        };
+        let mut limiter = SourceLocationRateLimiter::new(threshold, 100);
 
-        // First alert from location A should pass
+        // First alert from location A should pass (1 event >= 1)
         assert!(limiter.evaluate("file_a.rs", "10", 1000));
 
-        // Second alert from same location within window should be rate limited
-        assert!(!limiter.evaluate("file_a.rs", "10", 1100));
+        // Second alert still passes (still >= 1 event in window)
+        assert!(limiter.evaluate("file_a.rs", "10", 1100));
 
-        // Alert from different location should pass (independent rate limiting)
+        // Alert from different location should also pass (independent)
         assert!(limiter.evaluate("file_b.rs", "20", 1100));
 
-        // Same location after window passes should alert again
-        assert!(limiter.evaluate("file_a.rs", "10", 1700)); // 1000 + 600 + 100
+        // Same location after window passes should still pass
+        assert!(limiter.evaluate("file_a.rs", "10", 1700));
+    }
+
+    #[test]
+    fn source_location_rate_limiter_with_count() {
+        // Threshold: 3 events per 600 seconds per location
+        // Returns true when there are at least 3 events in the window
+        let threshold = RateThreshold {
+            times: 3,
+            duration: Duration::from_secs(600),
+        };
+        let mut limiter = SourceLocationRateLimiter::new(threshold, 100);
+
+        // First two alerts don't trigger (need 3 in window)
+        assert!(!limiter.evaluate("file.rs", "10", 1000));
+        assert!(!limiter.evaluate("file.rs", "10", 1100));
+
+        // Third alert triggers (now have 3 in window)
+        assert!(limiter.evaluate("file.rs", "10", 1200));
+
+        // Fourth continues to trigger (still >= 3 in window)
+        assert!(limiter.evaluate("file.rs", "10", 1300));
+
+        // Different location is independent - starts fresh
+        assert!(!limiter.evaluate("file.rs", "20", 1000));
+        assert!(!limiter.evaluate("file.rs", "20", 1100));
+        assert!(limiter.evaluate("file.rs", "20", 1200));
     }
 
     #[test]
     fn source_location_rate_limiter_different_lines_same_file() {
-        let mut limiter = SourceLocationRateLimiter::new(Duration::from_secs(600), 100);
+        // Threshold: 2 events per 600 seconds per location
+        let threshold = RateThreshold {
+            times: 2,
+            duration: Duration::from_secs(600),
+        };
+        let mut limiter = SourceLocationRateLimiter::new(threshold, 100);
 
-        // Different lines in same file should be independent
-        assert!(limiter.evaluate("file.rs", "10", 1000));
-        assert!(limiter.evaluate("file.rs", "20", 1000));
-        assert!(limiter.evaluate("file.rs", "30", 1000));
+        // First event at each location doesn't trigger (need 2)
+        assert!(!limiter.evaluate("file.rs", "10", 1000));
+        assert!(!limiter.evaluate("file.rs", "20", 1000));
+        assert!(!limiter.evaluate("file.rs", "30", 1000));
 
-        // Each should still be rate limited individually
-        assert!(!limiter.evaluate("file.rs", "10", 1100));
-        assert!(!limiter.evaluate("file.rs", "20", 1100));
+        // Second event at each location triggers
+        assert!(limiter.evaluate("file.rs", "10", 1100));
+        assert!(limiter.evaluate("file.rs", "20", 1100));
+        assert!(limiter.evaluate("file.rs", "30", 1100));
     }
 
     #[test]
     fn source_location_rate_limiter_cleanup() {
         // Use small max_entries to trigger cleanup
-        let mut limiter = SourceLocationRateLimiter::new(Duration::from_secs(600), 3);
+        let threshold = RateThreshold {
+            times: 1,
+            duration: Duration::from_secs(600),
+        };
+        let mut limiter = SourceLocationRateLimiter::new(threshold, 3);
 
         // Fill up the limiter
         assert!(limiter.evaluate("file1.rs", "1", 1000));
         assert!(limiter.evaluate("file2.rs", "2", 1000));
         assert!(limiter.evaluate("file3.rs", "3", 1000));
-        assert_eq!(limiter.last_timestamps.len(), 3);
+        assert_eq!(limiter.limiters.len(), 3);
 
         // Add one more, triggering cleanup - but all are fresh so none removed
         assert!(limiter.evaluate("file4.rs", "4", 1000));
         // Still have 4 after cleanup since none are old enough
-        assert_eq!(limiter.last_timestamps.len(), 4);
+        assert_eq!(limiter.limiters.len(), 4);
 
         // Now add with a timestamp far in the future - old entries should be cleaned
         assert!(limiter.evaluate("file5.rs", "5", 2000));
         // Should have cleaned up entries from timestamp 1000 (older than 600 sec window)
-        assert_eq!(limiter.last_timestamps.len(), 1);
+        assert_eq!(limiter.limiters.len(), 1);
     }
 }
