@@ -1,6 +1,6 @@
 use super::log_buffer::LogBuffer;
 use super::route::{Destination, Limit, Route};
-use super::{SignalAlertMessage, LimitResult, Limiter, LimiterSet};
+use super::{LimitResult, Limiter, LimiterSet, SignalAlertMessage};
 use crate::{
     concurrent_map::ConcurrentMap,
     log_format::LogFormatConfig,
@@ -85,7 +85,10 @@ pub struct LogHandler {
 
 impl LogHandler {
     /// Initialize a new log handler
-    pub fn new(config: LogHandlerConfig, signal_alert_mq_tx: UnboundedSender<SignalAlertMessage>) -> Self {
+    pub fn new(
+        config: LogHandlerConfig,
+        signal_alert_mq_tx: UnboundedSender<SignalAlertMessage>,
+    ) -> Self {
         let routes = config
             .routes
             .iter()
@@ -133,7 +136,9 @@ impl LogHandler {
                         // Guess at how much to reserve
                         text.reserve(iter.len() * 128);
                         for log_msg in iter {
-                            self.config.log_format.write_log_msg(&mut text, log_msg, now);
+                            self.config
+                                .log_format
+                                .write_log_msg(&mut text, log_msg, now);
                         }
                     });
                     text.push('\n');
@@ -180,7 +185,9 @@ impl LogHandler {
                         let now = Utc::now();
 
                         buffer.push_back_and_drain(log_msg, |log_msg| {
-                            self.config.log_format.write_log_msg(&mut text, log_msg, now);
+                            self.config
+                                .log_format
+                                .write_log_msg(&mut text, log_msg, now);
                         });
 
                         Some(text)

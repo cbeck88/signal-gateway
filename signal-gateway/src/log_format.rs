@@ -25,11 +25,20 @@ impl LogFormatConfig {
     ///
     /// The `now` parameter is the current time, used to calculate relative
     /// timestamps (e.g., "T-10s").
-    pub fn write_log_msg(&self, mut writer: impl std::fmt::Write, log_msg: &LogMessage, now: DateTime<Utc>) {
+    pub fn write_log_msg(
+        &self,
+        mut writer: impl std::fmt::Write,
+        log_msg: &LogMessage,
+        now: DateTime<Utc>,
+    ) {
         // Format: "ERROR     T-10s [foo bar.rs:42]: message"
         // Pad severity to 5 chars (left-aligned), time to 8 chars (right-aligned)
         if self.write_log_msg_inner(&mut writer, log_msg, now).is_err() {
-            error!("Couldn't write log message: {}: {}", log_msg.level.to_str(), log_msg.msg);
+            error!(
+                "Couldn't write log message: {}: {}",
+                log_msg.level.to_str(),
+                log_msg.msg
+            );
         }
     }
 
@@ -132,7 +141,13 @@ fn write_t_minus(writer: &mut impl Write, delta: TimeDelta, align: usize) -> std
     }
 
     // For durations < 1 minute, show hundredths; < 10 minutes, show tenths
-    let decimal_places = if total_secs < 60 { 2 } else if total_secs < 600 { 1 } else { 0 };
+    let decimal_places = if total_secs < 60 {
+        2
+    } else if total_secs < 600 {
+        1
+    } else {
+        0
+    };
     let frac = match decimal_places {
         2 => nanos / 10_000_000,  // hundredths
         1 => nanos / 100_000_000, // tenths

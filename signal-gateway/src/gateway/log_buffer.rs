@@ -51,7 +51,10 @@ impl LogBuffer {
     // caller-determined, but we need to pass our concrete iterator type. HRTB with the
     // concrete type (`F: for<'a> FnOnce(Rev<vec_deque::Iter<'a, T>>)`) works but leaks
     // implementation details.
-    pub fn with_iter<R>(&self, f: impl FnOnce(&mut dyn ExactSizeIterator<Item = &LogMessage>) -> R) -> R {
+    pub fn with_iter<R>(
+        &self,
+        f: impl FnOnce(&mut dyn ExactSizeIterator<Item = &LogMessage>) -> R,
+    ) -> R {
         let buf = self.buf.lock().unwrap();
         let mut iter = buf.iter().rev();
         f(&mut iter)

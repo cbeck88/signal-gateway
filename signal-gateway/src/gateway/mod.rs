@@ -4,14 +4,14 @@
 use crate::signal_jsonrpc::connect_ipc;
 use crate::{
     alertmanager::AlertPost,
+    log_message::{LogMessage, Origin},
+    message_handler::{
+        AdminMessage, AdminMessageResponse, Context, MessageHandler, MessageHandlerResult,
+    },
+    prometheus::{Prometheus, PrometheusConfig},
     signal_jsonrpc::{
         Envelope, Identity, MessageTarget, RpcClient, RpcClientError, SignalMessage, connect_tcp,
     },
-    log_message::{LogMessage, Origin},
-    message_handler::{
-        AdminMessageResponse, Context, MessageHandler, MessageHandlerResult, VerifiedSignalMessage,
-    },
-    prometheus::{Prometheus, PrometheusConfig},
 };
 use chrono::Utc;
 use conf::{Conf, Subcommands};
@@ -494,7 +494,7 @@ impl Gateway {
 
             self.handle_gateway_command(cmd).await
         } else if let Some(handler) = &self.message_handler {
-            let msg = VerifiedSignalMessage {
+            let msg = AdminMessage {
                 message: data.message.clone(),
                 timestamp: data.timestamp,
                 sender_uuid: msg.source_uuid.clone(),

@@ -9,7 +9,7 @@ use std::{error::Error, path::PathBuf};
 /// that has been verified as coming from a trusted admin.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
-pub struct VerifiedSignalMessage {
+pub struct AdminMessage {
     /// The text content of the message.
     pub message: String,
     /// The timestamp of the message (milliseconds since Unix epoch).
@@ -111,7 +111,7 @@ pub trait MessageHandler: Send + Sync {
     /// handled as gateway commands).
     async fn handle_verified_signal_message(
         &self,
-        msg: VerifiedSignalMessage,
+        msg: AdminMessage,
         context: &dyn Context,
     ) -> MessageHandlerResult;
 }

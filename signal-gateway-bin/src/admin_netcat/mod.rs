@@ -6,7 +6,7 @@
 use async_trait::async_trait;
 use conf::Conf;
 use signal_gateway::{
-    AdminMessageResponse, Context, MessageHandler, MessageHandlerResult, VerifiedSignalMessage,
+    AdminMessage, AdminMessageResponse, Context, MessageHandler, MessageHandlerResult,
 };
 use std::time::Duration;
 use tokio::{
@@ -45,7 +45,7 @@ struct AdminNetcatHandler {
 impl MessageHandler for AdminNetcatHandler {
     async fn handle_verified_signal_message(
         &self,
-        msg: VerifiedSignalMessage,
+        msg: AdminMessage,
         _context: &dyn Context,
     ) -> MessageHandlerResult {
         // Connect to server

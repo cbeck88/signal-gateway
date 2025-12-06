@@ -13,12 +13,12 @@ pub(crate) mod circular_buffer;
 pub(crate) mod concurrent_map;
 pub(crate) mod log_format;
 pub(crate) mod log_message;
-pub(crate) mod signal_jsonrpc;
 pub(crate) mod prometheus;
+pub(crate) mod signal_jsonrpc;
 pub(crate) mod transports;
 
 pub use gateway::{Gateway, GatewayConfig};
 pub use log_message::{Level, LogFilter, LogMessage, LogMessageBuilder};
 pub use message_handler::{
-    AdminMessageResponse, Context, MessageHandler, MessageHandlerResult, VerifiedSignalMessage,
+    AdminMessage, AdminMessageResponse, Context, MessageHandler, MessageHandlerResult,
 };
