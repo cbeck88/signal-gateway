@@ -118,7 +118,7 @@ impl LogHandler {
                 }
 
                 let mut text = String::with_capacity(4096);
-                let now = Utc::now().timestamp();
+                let now = Utc::now();
 
                 for (origin, buffer) in buffers.iter() {
                     // Apply filter if present
@@ -177,7 +177,7 @@ impl LogHandler {
                         // Guess at capacity, it will be faster to use too much memory than too little
                         // signal-cli JVM is a hog anyways.
                         let mut text = String::with_capacity(4096);
-                        let now = Utc::now().timestamp();
+                        let now = Utc::now();
 
                         buffer.push_back_and_drain(log_msg, |log_msg| {
                             self.config.log_format.write_log_msg(&mut text, log_msg, now);

@@ -11,7 +11,6 @@ pub mod message_handler;
 
 pub(crate) mod circular_buffer;
 pub(crate) mod concurrent_map;
-pub(crate) mod human_duration;
 pub(crate) mod log_format;
 pub(crate) mod log_message;
 pub(crate) mod signal_jsonrpc;
