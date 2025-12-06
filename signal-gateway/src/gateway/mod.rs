@@ -77,18 +77,6 @@ pub struct GatewayConfig {
     pub log_handler: LogHandlerConfig,
 }
 
-impl GatewayConfig {
-    /// Check if a UUID is a registered admin
-    pub fn is_admin(&self, uuid: &str) -> bool {
-        self.admin_signal_uuids.contains(uuid)
-    }
-
-    /// Get all admin UUIDs
-    pub fn admin_uuids(&self) -> Vec<String> {
-        self.admin_signal_uuids.uuids().cloned().collect()
-    }
-}
-
 /// Wrapper for parsing gateway commands
 #[derive(Clone, Debug, Conf)]
 struct GatewayCommandWrapper {
@@ -443,7 +431,7 @@ impl Gateway {
                                 if let Some(group_id) = &self.config.alert_group_id {
                                     MessageTarget::Group(group_id.clone())
                                 } else {
-                                    MessageTarget::Recipients(self.config.admin_uuids())
+                                    MessageTarget::Recipients(self.config.admin_signal_uuids.uuids().cloned().collect())
                                 }
                             }
                         };
@@ -480,7 +468,7 @@ impl Gateway {
                             let from_group = data_message.group_info.as_ref().map(|g| g.group_id.clone());
 
                             // Check if sender is an admin
-                            if !self.config.is_admin(&msg.envelope.source_uuid) {
+                            if !self.config.admin_signal_uuids.contains(&msg.envelope.source_uuid) {
                                 warn!("Ignoring message from non-admin: {msg:?}");
                                 continue;
                             }

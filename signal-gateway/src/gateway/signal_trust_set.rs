@@ -30,7 +30,7 @@ impl SignalTrustSet {
         self.map.contains_key(uuid)
     }
 
-    /// Get all admin UUIDs.
+    /// Get all UUIDs as an iterator.
     pub fn uuids(&self) -> impl Iterator<Item = &String> {
         self.map.keys()
     }
