@@ -77,7 +77,7 @@ pub struct GatewayConfig {
     #[conf(flatten)]
     pub prometheus: Option<PrometheusConfig>,
     /// Log handler configuration for processing log messages.
-    #[conf(flatten)]
+    #[conf(flatten, prefix)]
     pub log_handler: LogHandlerConfig,
 }
 
