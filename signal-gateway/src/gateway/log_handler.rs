@@ -182,28 +182,34 @@ impl LogHandler {
                         // Guess at capacity, it will be faster to use too much memory than too little
                         // signal-cli JVM is a hog anyways.
                         let mut text = String::with_capacity(4096);
+                        let mut first_msg_len = 0;
+                        let mut is_first = true;
                         let now = Utc::now();
 
                         buffer.push_back_and_drain(log_msg, |log_msg| {
                             self.config
                                 .log_format
                                 .write_log_msg(&mut text, log_msg, now);
+                            if is_first {
+                                first_msg_len = text.len();
+                                is_first = false;
+                            }
                         });
 
-                        Some(text)
+                        Some((text, first_msg_len))
                     }
                 },
             )
             .await;
 
         // Send alert if we have formatted text
-        if let Some(text) = formatted_text {
+        if let Some((text, first_msg_len)) = formatted_text {
             let destination_override = rate_limit_result.ok().flatten();
             if let Err(_err) = self.signal_alert_mq_tx.send(SignalAlertMessage {
                 origin: Some(origin),
                 text,
                 attachment_paths: Default::default(),
-                summary: Summary::Prefix(512),
+                summary: Summary::Prefix(first_msg_len),
                 destination_override,
             }) {
                 error!("Could not send alert message, queue is closed");
