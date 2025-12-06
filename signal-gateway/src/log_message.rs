@@ -57,7 +57,7 @@ impl Level {
     /// - info, information
     /// - debug
     /// - trace
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.to_ascii_uppercase().as_str() {
             "EMERGENCY" | "EMERG" => Some(Self::EMERGENCY),
             "ALERT" => Some(Self::ALERT),
@@ -79,7 +79,7 @@ impl<'de> Deserialize<'de> for Level {
         D: de::Deserializer<'de>,
     {
         let s = String::deserialize(deserializer)?;
-        Level::from_str(&s).ok_or_else(|| {
+        Level::parse(&s).ok_or_else(|| {
             de::Error::custom(format!(
                 "unknown log level '{}', expected one of: emergency, alert, critical, error, warning, notice, info, debug, trace",
                 s

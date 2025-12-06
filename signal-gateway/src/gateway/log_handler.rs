@@ -123,10 +123,8 @@ impl LogHandler {
 
                 for (origin, buffer) in buffers.iter() {
                     // Apply filter if present
-                    if let Some(f) = filter {
-                        if !origin.matches_filter(f) {
-                            continue;
-                        }
+                    if filter.is_some_and(|f| !origin.matches_filter(f)) {
+                        continue;
                     }
 
                     use std::fmt::Write;
@@ -287,9 +285,7 @@ impl LogHandler {
             }
 
             // Check if message matches route's filter (if any)
-            let filter_matches = route.filter.as_ref().map_or(true, |f| f.matches(log_msg));
-
-            if !filter_matches {
+            if !route.filter.as_ref().is_none_or(|f| f.matches(log_msg)) {
                 continue;
             }
 

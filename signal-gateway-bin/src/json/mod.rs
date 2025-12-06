@@ -239,7 +239,7 @@ where
     D: serde::Deserializer<'de>,
 {
     let opt: Option<String> = Option::deserialize(deserializer)?;
-    Ok(opt.and_then(|s| Level::from_str(&s)))
+    Ok(opt.and_then(|s| Level::parse(&s)))
 }
 
 /// Deserialize a timestamp from Unix epoch (int or string) or RFC3339 string
