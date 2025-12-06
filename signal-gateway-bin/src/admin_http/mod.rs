@@ -12,6 +12,7 @@ use std::time::Duration;
 
 /// Configuration for the admin HTTP client
 #[derive(Clone, Conf, Debug)]
+#[conf(serde)]
 pub struct AdminHttpConfig {
     /// URL to POST admin commands to
     #[conf(long, env)]

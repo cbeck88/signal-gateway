@@ -49,9 +49,10 @@ impl fmt::Display for SuppressionReason {
 
 /// Config options related to the log handler, and what log messages it chooses to alert on.
 #[derive(Clone, Conf, Debug)]
+#[conf(serde)]
 pub struct LogHandlerConfig {
     /// Routes for matching and rate-limiting log messages.
-    #[conf(long, env, value_parser = serde_json::from_str, default_value = "[]")]
+    #[conf(long, env, value_parser = serde_json::from_str, default_value = "[]", serde(alias = "route"))]
     pub routes: Vec<Route>,
     /// Overall rate limits applied after route checks pass.
     #[conf(long, env, value_parser = serde_json::from_str, default_value = "[]")]

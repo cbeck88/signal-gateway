@@ -22,6 +22,7 @@ use std::{path::PathBuf, str::FromStr, time::Duration};
 
 /// Configures our prometheus API client
 #[derive(Clone, Conf, Debug)]
+#[conf(serde)]
 pub struct PrometheusConfig {
     /// Address of prometheus host. Should start with http and usually indicate port 9090
     #[conf(long, env)]

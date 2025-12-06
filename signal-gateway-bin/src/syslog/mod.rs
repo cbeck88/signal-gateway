@@ -15,6 +15,7 @@ use tracing::{error, info, trace};
 
 /// Configuration for the syslog listener (supports both UDP and TCP).
 #[derive(Clone, Conf, Debug)]
+#[conf(serde)]
 pub struct SyslogConfig {
     /// Socket address to listen for syslog messages.
     /// Both UDP and TCP listeners are started on this address.

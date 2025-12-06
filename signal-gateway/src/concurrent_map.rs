@@ -153,12 +153,6 @@ where
     }
 }
 
-impl<K, V> std::fmt::Debug for LazyMap<K, V> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LazyMap").finish_non_exhaustive()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

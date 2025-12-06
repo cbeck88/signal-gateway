@@ -49,6 +49,7 @@ pub use crate::rate_limiter::{Limiter, RateThreshold};
 
 /// Configuration for the gateway.
 #[derive(Conf, Debug)]
+#[conf(serde)]
 #[cfg_attr(unix, conf(one_of_fields(signal_cli_tcp_addr, signal_cli_socket_path)))]
 #[cfg_attr(not(unix), conf(one_of_fields(signal_cli_tcp_addr)))]
 pub struct GatewayConfig {
@@ -62,6 +63,9 @@ pub struct GatewayConfig {
     /// The phone number or UUID of the Signal account to use.
     #[conf(long, env)]
     pub signal_account: String,
+    /// Delay before retrying connection to signal-cli after an error.
+    #[conf(long, env, default_value = "5s", value_parser = conf_extra::parse_duration, serde(use_value_parser))]
+    pub signal_cli_retry_delay: Duration,
     /// Admin UUIDs mapped to their safety numbers (can be empty).
     /// Example: `{"uuid1": ["12345...", "67890..."], "uuid2": []}`
     #[conf(long, env, value_parser = serde_json::from_str)]
@@ -279,7 +283,7 @@ impl Gateway {
 
             if let Err(err) = self.connect_and_run(&mut alert_rx).await {
                 error!("Error with signal-cli, reconnecting: {err}");
-                tokio::time::sleep(Duration::from_secs(5)).await;
+                tokio::time::sleep(self.config.signal_cli_retry_delay).await;
             }
         }
     }

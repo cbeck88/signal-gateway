@@ -26,6 +26,7 @@ use json_lines::read_json_lines_value;
 ///
 /// See [`JsonLogMessage`] for the JSON schema.
 #[derive(Clone, Conf, Debug)]
+#[conf(serde)]
 pub struct JsonConfig {
     /// Socket address to listen for JSON log messages.
     /// Both UDP and TCP listeners are started on this address.

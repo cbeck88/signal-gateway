@@ -64,13 +64,13 @@ pub struct Route {
 
     /// Rate limits applied per-origin for messages matching this route.
     /// Each limit specifies a filter and threshold for suppressing repeated alerts.
-    #[serde(default)]
-    pub limit: Vec<Limit>,
+    #[serde(default, alias = "limit")]
+    pub limits: Vec<Limit>,
 
     /// Global rate limits applied across all origins for this route.
     /// Each limit specifies a filter and threshold for suppressing repeated alerts.
-    #[serde(default)]
-    pub global_limit: Vec<Limit>,
+    #[serde(default, alias = "global_limit")]
+    pub global_limits: Vec<Limit>,
 }
 
 fn default_alert_level() -> Level {
@@ -80,8 +80,8 @@ fn default_alert_level() -> Level {
 impl Route {
     /// Create a limiter set from this route's limit configurations.
     pub fn make_limiter_set(&self) -> LimiterSet {
-        let limits = self.limit.clone();
-        let global_limiters = self.global_limit.iter().map(|l| l.make_limiter()).collect();
+        let limits = self.limits.clone();
+        let global_limiters = self.global_limits.iter().map(|l| l.make_limiter()).collect();
         LimiterSet::new(
             move || limits.iter().map(|l| l.make_limiter()).collect(),
             global_limiters,
@@ -95,8 +95,8 @@ impl Default for Route {
             alert_level: default_alert_level(),
             filter: LogFilter::default(),
             destination: None,
-            limit: Vec::new(),
-            global_limit: Vec::new(),
+            limits: Vec::new(),
+            global_limits: Vec::new(),
         }
     }
 }

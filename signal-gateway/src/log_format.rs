@@ -11,6 +11,7 @@ use tracing::error;
 
 /// Configuration for log message formatting.
 #[derive(Clone, Conf, Debug, Default)]
+#[conf(serde)]
 pub struct LogFormatConfig {
     /// Include the module path in formatted output.
     #[conf(long, env)]

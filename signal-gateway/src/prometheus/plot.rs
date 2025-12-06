@@ -14,7 +14,7 @@ pub use prometheus_http_client::{
 
 /// Configuration for plots generated from prometheus data
 #[derive(Clone, Conf, Debug)]
-#[conf(at_most_one_of_fields(utc_offset, timezone))]
+#[conf(serde, at_most_one_of_fields(utc_offset, timezone))]
 pub struct PlotConfig {
     /// Working directory for temporary plot files
     #[conf(long, env, default_value = "/tmp")]
@@ -24,11 +24,11 @@ pub struct PlotConfig {
     age_limit: Duration,
     /// Fixed timezone offset for plot timestamps, e.g. "+05:30" or "-08:00".
     /// Mutually exclusive with --timezone.
-    #[conf(long, env)]
+    #[conf(long, env, serde(use_value_parser))]
     utc_offset: Option<FixedOffset>,
     /// Timezone name for plot timestamps, e.g. "US/Mountain" or "Europe/Paris".
     /// Mutually exclusive with --utc-offset.
-    #[conf(long, env)]
+    #[conf(long, env, serde(use_value_parser))]
     timezone: Option<Tz>,
     /// Stroke width for plot lines
     #[conf(long, env, default_value = "2")]

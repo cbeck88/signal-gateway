@@ -17,6 +17,7 @@ use tokio::{
 
 /// Configuration for the admin netcat TCP client
 #[derive(Clone, Conf, Debug)]
+#[conf(serde)]
 pub struct AdminNetcatConfig {
     /// TCP address to forward admin commands to
     #[conf(long, env)]

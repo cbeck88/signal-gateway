@@ -26,6 +26,7 @@ use json::JsonConfig;
 
 /// Admin message handler configuration - select how non-command messages are handled
 #[derive(Clone, Debug, Subcommands)]
+#[conf(serde)]
 enum AdminHandlerCommand {
     /// Forward (unhandled) admin messages to a TCP endpoint (netcat-style)
     /// Useful if an http server would be heavy in the target process
@@ -45,8 +46,10 @@ impl AdminHandlerCommand {
     }
 }
 
+/// Top-level configuration for signal-gateway.
 #[derive(Conf, Debug)]
-struct Config {
+#[conf(serde)]
+pub struct Config {
     /// If true, just validate config and don't start
     #[conf(long)]
     dry_run: bool,
@@ -60,7 +63,7 @@ struct Config {
     /// Optional admin message handler (netcat or http)
     #[conf(subcommands)]
     admin_handler: Option<AdminHandlerCommand>,
-    #[conf(flatten)]
+    #[conf(flatten, serde(flatten))]
     gateway: GatewayConfig,
 }
 
@@ -172,4 +175,85 @@ fn start_http_task(listener: TcpListener, gateway: Arc<Gateway>) -> tokio::task:
             });
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use conf::Conf;
+
+    #[test]
+    fn test_toml_config() {
+        let toml_config = r#"
+http_listen_addr = "0.0.0.0:8080"
+signal_account = "+15551234567"
+signal_cli_tcp_addr = "127.0.0.1:7583"
+signal_cli_retry_delay = "10s"
+
+[admin_safety_numbers]
+"abc-123-uuid" = ["12345 67890 12345 67890 12345 67890"]
+"def-456-uuid" = []
+
+[syslog]
+listen_addr = "0.0.0.0:1514"
+sd_id = "tracing-meta@64700"
+
+[json]
+listen_addr = "0.0.0.0:5000"
+
+[log_handler]
+log_buffer_size = 128
+overall_limits = [{ threshold = ">= 100 / 1h" }]
+
+[[log_handler.route]]
+alert_level = "warn"
+msg_contains = "critical"
+
+[[log_handler.route]]
+alert_level = "error"
+
+[[log_handler.route]]
+msg_contains = "connection reset"
+limits = [
+    { threshold = ">= 5 / 1m" },
+    { threshold = ">= 20 / 1h" },
+]
+"#;
+
+        // Parse TOML to a generic value, then use conf's builder to parse it
+        let doc: toml::Value = toml::from_str(toml_config).expect("Failed to parse TOML");
+        let empty_env: [(&str, &str); 0] = [];
+        let config: Config = Config::conf_builder()
+            .args(["."])
+            .env(empty_env)
+            .doc("test.toml", doc)
+            .try_parse()
+            .expect("Failed to parse config");
+
+        assert_eq!(
+            config.http_listen_addr,
+            "0.0.0.0:8080".parse().unwrap()
+        );
+        assert_eq!(config.gateway.signal_account, "+15551234567");
+        assert_eq!(
+            config.gateway.signal_cli_tcp_addr,
+            Some("127.0.0.1:7583".parse().unwrap())
+        );
+        assert_eq!(
+            config.gateway.signal_cli_retry_delay,
+            Duration::from_secs(10)
+        );
+        assert_eq!(config.gateway.admin_safety_numbers.len(), 2);
+        assert!(config.gateway.admin_safety_numbers.contains_key("abc-123-uuid"));
+
+        let syslog = config.syslog.expect("syslog should be present");
+        assert_eq!(syslog.listen_addr, "0.0.0.0:1514".parse().unwrap());
+
+        let json = config.json.expect("json should be present");
+        assert_eq!(json.listen_addr, "0.0.0.0:5000".parse().unwrap());
+
+        assert_eq!(config.gateway.log_handler.log_buffer_size, 128);
+        assert_eq!(config.gateway.log_handler.routes.len(), 3);
+        assert_eq!(config.gateway.log_handler.overall_limits.len(), 1);
+    }
 }
