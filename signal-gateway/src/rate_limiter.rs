@@ -93,7 +93,6 @@ impl TryFrom<String> for RateThreshold {
 const SOURCE_LOCATION_MAX_ENTRIES: usize = 2000;
 
 /// A rate limiter that can be either a multi-rate limiter or a source-location limiter.
-#[derive(Debug)]
 pub enum Limiter {
     /// Counts events regardless of source location.
     Multi(MultiRateLimiter),
@@ -177,7 +176,6 @@ fn store_max(val: i64, at: &AtomicI64) {
 /// This allows different error locations to alert independently, preventing one noisy
 /// error from suppressing alerts from completely different code paths. Each location
 /// gets its own `MultiRateLimiter` with the full threshold.
-#[derive(Debug)]
 pub struct SourceLocationRateLimiter {
     /// Maps (file, line) -> rate limiter for that location
     limiters: HashMap<(String, String), MultiRateLimiter>,
@@ -220,54 +218,49 @@ impl SourceLocationRateLimiter {
     /// Remove entries where all timestamps are older than the window
     fn cleanup(&mut self, now: i64) {
         let window = self.threshold.duration.as_secs() as i64;
+        let cutoff = now - window;
         self.limiters.retain(|_, limiter| {
             // Keep if any timestamp is recent enough
-            limiter.timestamps.iter().any(|&ts| now - ts < window)
+            limiter.get_latest() > cutoff
         });
     }
 }
 
 /// Implements rate-limiting criteria such as 'at least n in the last w seconds'
-#[derive(Debug)]
+///
+/// Uses a ring buffer to track the N most recent timestamps.
 pub struct MultiRateLimiter {
-    /// Records the last n events
-    timestamps: Vec<i64>,
-    /// Invariant: Always points to the oldest of the last n timestamps in the buffer
-    idx: usize,
+    inner: MultiRateLimiterInner,
     /// The length of the window (in seconds)
     window: i64,
     /// If true, returns true when rate >= threshold (burst detection).
     /// If false, returns true when rate < threshold (suppression).
     comparator_is_ge: bool,
+    /// Cache of latest timestamp recorded
+    latest: i64,
 }
 
 impl MultiRateLimiter {
     pub fn new(num: usize, window: Duration, comparator_is_ge: bool) -> Self {
         Self {
-            idx: 0,
-            timestamps: vec![Default::default(); num],
+            inner: MultiRateLimiterInner::new(num),
             window: window.as_secs().try_into().unwrap(),
             comparator_is_ge,
+            latest: 0,
         }
     }
 
-    /// Check if a particular new timestamp passes the limit. This also updates the last-known timestamp.
-    ///
-    /// Note: Assumes that new_timestamp is monotonically increasing, otherwise it might not work right.
+    /// Get the latest timestamp recorded
+    pub fn get_latest(&self) -> i64 {
+        self.latest
+    }
+
+    /// Check if a particular new timestamp passes the limit. This also updates the internal state.
     pub fn evaluate(&mut self, new_timestamp: i64) -> bool {
-        let oldest = self.timestamps[self.idx];
-        if oldest >= new_timestamp {
-            // Duplicate timestamp - for burst detection return current state,
-            // for suppression return inverted
-            return !self.comparator_is_ge;
-        }
-        self.timestamps[self.idx] = new_timestamp;
-        self.idx += 1;
-        self.idx %= self.timestamps.len();
-        let next_oldest = self.timestamps[self.idx];
-        // If the next oldest is within 'window' of the new timestamp,
-        // then all of the most recent n are within the window.
-        let threshold_met = next_oldest + self.window >= new_timestamp;
+        let (earliest, latest) = self.inner.insert_and_pop(new_timestamp);
+        self.latest = self.latest.max(latest);
+
+        let threshold_met = earliest + self.window >= latest;
 
         if self.comparator_is_ge {
             // Burst detection: alert when rate >= threshold
@@ -275,6 +268,131 @@ impl MultiRateLimiter {
         } else {
             // Suppression: alert when rate < threshold
             !threshold_met
+        }
+    }
+}
+
+struct MultiRateLimiterInner {
+    /// Records the last n events as a ring buffer.
+    /// Initialized to 0, representing "very distant past".
+    timestamps: Box<[i64]>,
+    /// Points to smallest entry.
+    /// Invariant: timestamps[i] <= timestamp[i + 1  % n], with the exception
+    ///            that timestamps[idx - 1] may be > timestamps[idx].
+    idx: usize,
+}
+
+impl MultiRateLimiterInner {
+    fn new(n: usize) -> Self {
+        Self {
+            timestamps: vec![0i64; n].into(),
+            idx: 0,
+        }
+    }
+
+    // Insert a new timestamp into the buffer. Update self.idx as needed.
+    // Then return the evicted timestamp (earliest), and the latest timestamp in the set.
+    //
+    // Note that the evicted timestamp could be the `new_timestamp` value
+    // if things are badly out of order.
+    fn insert_and_pop(&mut self, new_timestamp: i64) -> (i64, i64) {
+        let n = self.timestamps.len();
+
+        let evicted = self.insert_helper(new_timestamp);
+
+        let newest = self.timestamps[self.idx];
+        self.idx += 1;
+        if self.idx >= n {
+            self.idx -= n;
+        }
+
+        (evicted, newest)
+    }
+
+    // Insert a new timestamp into the set using an insertion sort strategy that starts
+    // at idx - 1. This terminates very quickly if new_timestamp is actually the latest
+    // timestamp, which should be the typical case.
+    //
+    // Does NOT update self.idx. However self.idx should be unconditionally incremented
+    // with wraparound after this.
+    // Returns the previous oldest timestamp, or new_timestamp if that is older.
+    fn insert_helper(&mut self, new_timestamp: i64) -> i64 {
+        let prev_oldest = self.timestamps[self.idx];
+        let n = self.timestamps.len();
+
+        // find a place to insert it, trying at idx and comparing with idx - 1 entry. first.
+        for j in (0..self.idx).rev() {
+            if self.timestamps[j] <= new_timestamp {
+                self.timestamps[j + 1] = new_timestamp;
+                return prev_oldest;
+            } else {
+                self.timestamps[j + 1] = self.timestamps[j];
+            }
+        }
+        // This is the wrap-around point, and it happens when j is n -1 conceptually,
+        // and only if n-1 != 0.
+        if n > 1 {
+            if self.timestamps[n - 1] <= new_timestamp {
+                self.timestamps[0] = new_timestamp;
+                return prev_oldest;
+            } else {
+                self.timestamps[0] = self.timestamps[n - 1];
+            }
+        }
+        // Walk towards self.idx from n - 2, trying to insert
+        for j in (self.idx + 1..n - 1).rev() {
+            if self.timestamps[j] <= new_timestamp {
+                self.timestamps[j + 1] = new_timestamp;
+                return prev_oldest;
+            } else {
+                self.timestamps[j + 1] = self.timestamps[j];
+            }
+        }
+        // We've tried every position except j = self.idx, so now we figure out
+        // if this is the oldest or older than the previous oldest.
+        // If n == 1, this is the only block that isn't vacuous
+        let f = {
+            let mut f = self.idx + 1;
+            if f >= n {
+                f -= n;
+            }
+            f
+        };
+        if prev_oldest < new_timestamp {
+            self.timestamps[f] = new_timestamp;
+            prev_oldest
+        } else {
+            // We've now shifted the whole buffer by one and new_timestamp
+            // couldn't be inserted. This was slow but usually timestamps should
+            // be increasing, so this shouldn't happen often.
+            self.timestamps[f] = prev_oldest;
+            new_timestamp
+        }
+    }
+
+    #[cfg(test)]
+    fn assert_invariant(&self) {
+        let n = self.timestamps.len();
+        if n < 2 {
+            return;
+        }
+
+        for j in 0..n {
+            let inc = {
+                let mut inc = j + 1;
+                if inc == n {
+                    inc = 0;
+                }
+                inc
+            };
+            if inc != self.idx {
+                assert!(
+                    self.timestamps[j] <= self.timestamps[inc],
+                    "assertion failed at j = {j}, inc = {inc}\nidx = {idx}\nself.timestamps = {ts:#?}",
+                    ts = self.timestamps,
+                    idx = self.idx
+                );
+            }
         }
     }
 }
@@ -329,7 +447,8 @@ mod tests {
     #[test]
     fn source_location_rate_limiter_basic() {
         // Threshold: >= 1 event per 600 seconds per location (burst detection)
-        // Returns true when there's at least 1 event in the window
+        // With evicted-vs-latest semantic: returns true when a previous event
+        // was evicted and it's still within the window of the new event.
         let threshold = RateThreshold {
             times: 1,
             duration: Duration::from_secs(600),
@@ -337,23 +456,27 @@ mod tests {
         };
         let mut limiter = SourceLocationRateLimiter::new(threshold, 100);
 
-        // First alert from location A should pass (1 event >= 1)
-        assert!(limiter.evaluate("file_a.rs", "10", 1000));
+        // First alert from location A: no previous event to compare, returns false
+        assert!(!limiter.evaluate("file_a.rs", "10", 1000));
 
-        // Second alert still passes (still >= 1 event in window)
+        // Second alert: evicted=1000, newest=1100, 1000+600>=1100 → true
         assert!(limiter.evaluate("file_a.rs", "10", 1100));
 
-        // Alert from different location should also pass (independent)
-        assert!(limiter.evaluate("file_b.rs", "20", 1100));
+        // First alert from different location: no previous event, returns false
+        assert!(!limiter.evaluate("file_b.rs", "20", 1100));
 
-        // Same location after window passes should still pass
+        // Same location, still within window of previous
         assert!(limiter.evaluate("file_a.rs", "10", 1700));
+
+        // Same location, outside window of previous (1700 + 600 < 2400)
+        assert!(!limiter.evaluate("file_a.rs", "10", 2400));
     }
 
     #[test]
     fn source_location_rate_limiter_with_count() {
         // Threshold: >= 3 events per 600 seconds per location (burst detection)
-        // Returns true when there are at least 3 events in the window
+        // With evicted-vs-latest: need 4 events total, where the 1st (evicted)
+        // is still within window of the 4th (newest).
         let threshold = RateThreshold {
             times: 3,
             duration: Duration::from_secs(600),
@@ -361,25 +484,28 @@ mod tests {
         };
         let mut limiter = SourceLocationRateLimiter::new(threshold, 100);
 
-        // First two alerts don't trigger (need 3 in window)
+        // First three alerts: buffer filling, evicted=0, returns false
         assert!(!limiter.evaluate("file.rs", "10", 1000));
         assert!(!limiter.evaluate("file.rs", "10", 1100));
+        assert!(!limiter.evaluate("file.rs", "10", 1200));
 
-        // Third alert triggers (now have 3 in window)
-        assert!(limiter.evaluate("file.rs", "10", 1200));
-
-        // Fourth continues to trigger (still >= 3 in window)
+        // Fourth alert: evicted=1000, newest=1300, 1000+600>=1300 → true
         assert!(limiter.evaluate("file.rs", "10", 1300));
+
+        // Fifth continues to trigger (evicted=1100, 1100+600>=1400 → true)
+        assert!(limiter.evaluate("file.rs", "10", 1400));
 
         // Different location is independent - starts fresh
         assert!(!limiter.evaluate("file.rs", "20", 1000));
         assert!(!limiter.evaluate("file.rs", "20", 1100));
-        assert!(limiter.evaluate("file.rs", "20", 1200));
+        assert!(!limiter.evaluate("file.rs", "20", 1200));
+        assert!(limiter.evaluate("file.rs", "20", 1300));
     }
 
     #[test]
     fn source_location_rate_limiter_different_lines_same_file() {
         // Threshold: >= 2 events per 600 seconds per location (burst detection)
+        // With evicted-vs-latest: need 3 events, where 1st (evicted) is within window of 3rd
         let threshold = RateThreshold {
             times: 2,
             duration: Duration::from_secs(600),
@@ -387,21 +513,26 @@ mod tests {
         };
         let mut limiter = SourceLocationRateLimiter::new(threshold, 100);
 
-        // First event at each location doesn't trigger (need 2)
+        // First two events at each location: buffer filling, evicted=0
         assert!(!limiter.evaluate("file.rs", "10", 1000));
         assert!(!limiter.evaluate("file.rs", "20", 1000));
         assert!(!limiter.evaluate("file.rs", "30", 1000));
 
-        // Second event at each location triggers
-        assert!(limiter.evaluate("file.rs", "10", 1100));
-        assert!(limiter.evaluate("file.rs", "20", 1100));
-        assert!(limiter.evaluate("file.rs", "30", 1100));
+        assert!(!limiter.evaluate("file.rs", "10", 1100));
+        assert!(!limiter.evaluate("file.rs", "20", 1100));
+        assert!(!limiter.evaluate("file.rs", "30", 1100));
+
+        // Third event at each location triggers (evicted within window of newest)
+        assert!(limiter.evaluate("file.rs", "10", 1200));
+        assert!(limiter.evaluate("file.rs", "20", 1200));
+        assert!(limiter.evaluate("file.rs", "30", 1200));
     }
 
     #[test]
     fn source_location_rate_limiter_suppression() {
         // Threshold: < 3 events per 600 seconds per location (suppression)
-        // Returns true when there are fewer than 3 events in the window
+        // With evicted-vs-latest: returns true when evicted + window < latest
+        // (i.e., the evicted event is too old, meaning events are spread out)
         let threshold = RateThreshold {
             times: 3,
             duration: Duration::from_secs(600),
@@ -409,18 +540,181 @@ mod tests {
         };
         let mut limiter = SourceLocationRateLimiter::new(threshold, 100);
 
-        // First two alerts pass (< 3 events in window)
+        // First three alerts: evicted=0, threshold_met=false, returns true
         assert!(limiter.evaluate("file.rs", "10", 1000));
         assert!(limiter.evaluate("file.rs", "10", 1100));
+        assert!(limiter.evaluate("file.rs", "10", 1200));
 
-        // Third alert suppressed (now have 3 in window, not < 3)
-        assert!(!limiter.evaluate("file.rs", "10", 1200));
-
-        // Fourth also suppressed (still >= 3 in window)
+        // Fourth: evicted=1000, 1000+600>=1300 → true, returns false (suppressed)
         assert!(!limiter.evaluate("file.rs", "10", 1300));
 
-        // After window expires, first event passes again
+        // Fifth also suppressed (evicted=1100, 1100+600>=1400 → true)
+        assert!(!limiter.evaluate("file.rs", "10", 1400));
+
+        // After gap: evicted=1200, 1200+600=1800 < 2000 → false, returns true
         assert!(limiter.evaluate("file.rs", "10", 2000));
+    }
+
+    #[test]
+    fn multi_rate_limiter_inner_mostly_monotonic() {
+        let mut inner = MultiRateLimiterInner::new(4);
+        inner.assert_invariant();
+
+        // Mostly increasing with a few out-of-order
+        let (evicted, newest) = inner.insert_and_pop(100);
+        inner.assert_invariant();
+        assert_eq!(evicted, 0);
+        assert_eq!(newest, 100);
+
+        let (evicted, newest) = inner.insert_and_pop(200);
+        inner.assert_invariant();
+        assert_eq!(evicted, 0);
+        assert_eq!(newest, 200);
+
+        let (evicted, newest) = inner.insert_and_pop(150); // Out of order!
+        inner.assert_invariant();
+        assert_eq!(evicted, 0);
+        assert_eq!(newest, 200); // 200 is still newest
+
+        let (evicted, newest) = inner.insert_and_pop(300);
+        inner.assert_invariant();
+        assert_eq!(evicted, 0);
+        assert_eq!(newest, 300);
+
+        // Buffer is now full: [100, 150, 200, 300]
+        // Next insert evicts the oldest (100)
+        let (evicted, newest) = inner.insert_and_pop(400);
+        inner.assert_invariant();
+        assert_eq!(evicted, 100);
+        assert_eq!(newest, 400);
+
+        // Insert slightly out of order
+        let (evicted, newest) = inner.insert_and_pop(350); // Between 300 and 400
+        inner.assert_invariant();
+        assert_eq!(evicted, 150);
+        assert_eq!(newest, 400); // 400 still newest
+
+        let (evicted, newest) = inner.insert_and_pop(500);
+        inner.assert_invariant();
+        assert_eq!(evicted, 200);
+        assert_eq!(newest, 500);
+
+        let (evicted, newest) = inner.insert_and_pop(450); // Out of order
+        inner.assert_invariant();
+        assert_eq!(evicted, 300);
+        assert_eq!(newest, 500);
+    }
+
+    #[test]
+    fn multi_rate_limiter_inner_chaotic() {
+        let mut inner = MultiRateLimiterInner::new(3);
+        inner.assert_invariant();
+
+        // Chaotic sequence: 500, 100, 300, 200, 400, 150, 600, 50
+        let (evicted, newest) = inner.insert_and_pop(500);
+        inner.assert_invariant();
+        assert_eq!(evicted, 0);
+        assert_eq!(newest, 500);
+
+        let (evicted, newest) = inner.insert_and_pop(100); // Much smaller
+        inner.assert_invariant();
+        assert_eq!(evicted, 0);
+        assert_eq!(newest, 500);
+
+        let (evicted, newest) = inner.insert_and_pop(300); // In between
+        inner.assert_invariant();
+        assert_eq!(evicted, 0);
+        assert_eq!(newest, 500);
+
+        // Buffer full: [100, 300, 500]
+        let (evicted, newest) = inner.insert_and_pop(200); // Smaller than all but 100
+        inner.assert_invariant();
+        assert_eq!(evicted, 100);
+        assert_eq!(newest, 500);
+
+        // Buffer: [200, 300, 500]
+        let (evicted, newest) = inner.insert_and_pop(400); // In between
+        inner.assert_invariant();
+        assert_eq!(evicted, 200);
+        assert_eq!(newest, 500);
+
+        // Buffer: [300, 400, 500]
+        let (evicted, newest) = inner.insert_and_pop(150); // Smaller than all - gets evicted!
+        inner.assert_invariant();
+        assert_eq!(evicted, 150); // The new value itself is evicted
+        assert_eq!(newest, 500);
+
+        // Buffer unchanged: [300, 400, 500]
+        let (evicted, newest) = inner.insert_and_pop(600); // New largest
+        inner.assert_invariant();
+        assert_eq!(evicted, 300);
+        assert_eq!(newest, 600);
+
+        // Buffer: [400, 500, 600]
+        let (evicted, newest) = inner.insert_and_pop(50); // Way too old - gets evicted
+        inner.assert_invariant();
+        assert_eq!(evicted, 50);
+        assert_eq!(newest, 600);
+    }
+
+    #[test]
+    fn multi_rate_limiter_inner_size_one() {
+        let mut inner = MultiRateLimiterInner::new(1);
+        inner.assert_invariant();
+
+        let (evicted, newest) = inner.insert_and_pop(100);
+        inner.assert_invariant();
+        assert_eq!(evicted, 0);
+        assert_eq!(newest, 100);
+
+        let (evicted, newest) = inner.insert_and_pop(200);
+        inner.assert_invariant();
+        assert_eq!(evicted, 100);
+        assert_eq!(newest, 200);
+
+        let (evicted, newest) = inner.insert_and_pop(150); // Out of order - still evicts previous
+        inner.assert_invariant();
+        assert_eq!(evicted, 150); // 150 < 200, so 150 gets evicted immediately
+        assert_eq!(newest, 200);
+
+        let (evicted, newest) = inner.insert_and_pop(300);
+        inner.assert_invariant();
+        assert_eq!(evicted, 200);
+        assert_eq!(newest, 300);
+    }
+
+    #[test]
+    fn multi_rate_limiter_inner_size_two() {
+        let mut inner = MultiRateLimiterInner::new(2);
+        inner.assert_invariant();
+
+        let (evicted, newest) = inner.insert_and_pop(100);
+        inner.assert_invariant();
+        assert_eq!(evicted, 0);
+        assert_eq!(newest, 100);
+
+        let (evicted, newest) = inner.insert_and_pop(50); // Smaller - but buffer not full
+        inner.assert_invariant();
+        assert_eq!(evicted, 0);
+        assert_eq!(newest, 100); // 100 still newest
+
+        // Buffer: [50, 100]
+        let (evicted, newest) = inner.insert_and_pop(200);
+        inner.assert_invariant();
+        assert_eq!(evicted, 50);
+        assert_eq!(newest, 200);
+
+        // Buffer: [100, 200]
+        let (evicted, newest) = inner.insert_and_pop(150); // In between
+        inner.assert_invariant();
+        assert_eq!(evicted, 100);
+        assert_eq!(newest, 200);
+
+        // Buffer: [150, 200]
+        let (evicted, newest) = inner.insert_and_pop(75); // Too old
+        inner.assert_invariant();
+        assert_eq!(evicted, 75);
+        assert_eq!(newest, 200);
     }
 
     #[test]
@@ -433,19 +727,20 @@ mod tests {
         };
         let mut limiter = SourceLocationRateLimiter::new(threshold, 3);
 
-        // Fill up the limiter
-        assert!(limiter.evaluate("file1.rs", "1", 1000));
-        assert!(limiter.evaluate("file2.rs", "2", 1000));
-        assert!(limiter.evaluate("file3.rs", "3", 1000));
+        // Fill up the limiter (first events return false with evicted-vs-latest)
+        assert!(!limiter.evaluate("file1.rs", "1", 1000));
+        assert!(!limiter.evaluate("file2.rs", "2", 1000));
+        assert!(!limiter.evaluate("file3.rs", "3", 1000));
         assert_eq!(limiter.limiters.len(), 3);
 
         // Add one more, triggering cleanup - but all are fresh so none removed
-        assert!(limiter.evaluate("file4.rs", "4", 1000));
+        assert!(!limiter.evaluate("file4.rs", "4", 1000));
         // Still have 4 after cleanup since none are old enough
         assert_eq!(limiter.limiters.len(), 4);
 
         // Now add with a timestamp far in the future - old entries should be cleaned
-        assert!(limiter.evaluate("file5.rs", "5", 2000));
+        // (cutoff = 2000 - 600 = 1400, entries with latest <= 1400 are removed)
+        assert!(!limiter.evaluate("file5.rs", "5", 2000));
         // Should have cleaned up entries from timestamp 1000 (older than 600 sec window)
         assert_eq!(limiter.limiters.len(), 1);
     }

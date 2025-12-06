@@ -27,15 +27,6 @@ pub struct LimiterSet {
     global_limiters: Vec<Limiter>,
 }
 
-impl std::fmt::Debug for LimiterSet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("LimiterSet")
-            .field("limiters", &self.limiters)
-            .field("global_limiters", &self.global_limiters)
-            .finish_non_exhaustive()
-    }
-}
-
 impl LimiterSet {
     /// Create a new limiter set with factories for per-origin and global limiters.
     pub fn new(

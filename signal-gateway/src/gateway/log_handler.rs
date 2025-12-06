@@ -73,7 +73,6 @@ pub struct LogHandlerConfig {
 ///
 /// Additionally, the log handler can format the buffer of recent logs into a string,
 /// if requested.
-#[derive(Debug)]
 pub struct LogHandler {
     config: LogHandlerConfig,
     signal_alert_mq_tx: UnboundedSender<SignalAlertMessage>,
