@@ -69,7 +69,7 @@ pub struct GatewayConfig {
     /// Admin UUIDs mapped to their safety numbers (can be empty).
     /// Example: `{"uuid1": ["12345...", "67890..."], "uuid2": []}`
     #[conf(long, env, value_parser = serde_json::from_str)]
-    pub admin_safety_numbers: HashMap<String, Vec<String>>,
+    pub admin_signal_uuids: HashMap<String, Vec<String>>,
     /// If set, alerts are sent to this group instead of individual admins.
     #[conf(long, env)]
     pub alert_group_id: Option<String>,
@@ -84,12 +84,12 @@ pub struct GatewayConfig {
 impl GatewayConfig {
     /// Check if a UUID is a registered admin
     pub fn is_admin(&self, uuid: &str) -> bool {
-        self.admin_safety_numbers.contains_key(uuid)
+        self.admin_signal_uuids.contains_key(uuid)
     }
 
     /// Get all admin UUIDs
     pub fn admin_uuids(&self) -> Vec<String> {
-        self.admin_safety_numbers.keys().cloned().collect()
+        self.admin_signal_uuids.keys().cloned().collect()
     }
 }
 
@@ -320,7 +320,7 @@ impl Gateway {
     /// 2. If any trusted identity is NOT in our config, remove the contact entirely and re-add only configured ones
     /// 3. Otherwise, just trust any new safety numbers from config that aren't already trusted
     async fn update_trust(&self, signal_cli: &impl RpcClient) {
-        for (uuid, safety_numbers) in &self.config.admin_safety_numbers {
+        for (uuid, safety_numbers) in &self.config.admin_signal_uuids {
             if safety_numbers.is_empty() {
                 continue;
             }

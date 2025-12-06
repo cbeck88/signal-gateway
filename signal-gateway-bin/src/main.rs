@@ -190,7 +190,7 @@ signal_account = "+15551234567"
 signal_cli_tcp_addr = "127.0.0.1:7583"
 signal_cli_retry_delay = "10s"
 
-[admin_safety_numbers]
+[admin_signal_uuids]
 "abc-123-uuid" = ["12345 67890 12345 67890 12345 67890"]
 "def-456-uuid" = []
 
@@ -243,8 +243,8 @@ limits = [
             config.gateway.signal_cli_retry_delay,
             Duration::from_secs(10)
         );
-        assert_eq!(config.gateway.admin_safety_numbers.len(), 2);
-        assert!(config.gateway.admin_safety_numbers.contains_key("abc-123-uuid"));
+        assert_eq!(config.gateway.admin_signal_uuids.len(), 2);
+        assert!(config.gateway.admin_signal_uuids.contains_key("abc-123-uuid"));
 
         let syslog = config.syslog.expect("syslog should be present");
         assert_eq!(syslog.listen_addr, "0.0.0.0:1514".parse().unwrap());
