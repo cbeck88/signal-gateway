@@ -26,13 +26,10 @@ impl LogFormatConfig {
     /// The `now` parameter is the current time, used to calculate relative
     /// timestamps (e.g., "T-10s").
     pub fn write_log_msg(&self, mut writer: impl std::fmt::Write, log_msg: &LogMessage, now: DateTime<Utc>) {
-        let sev = log_msg.level.to_str();
-        let msg = &log_msg.msg;
-
         // Format: "ERROR     T-10s [foo bar.rs:42]: message"
         // Pad severity to 5 chars (left-aligned), time to 8 chars (right-aligned)
-        if self.write_log_msg_inner(&mut writer, log_msg, now, sev, msg).is_err() {
-            error!("Couldn't write log message: {sev}: {msg}");
+        if self.write_log_msg_inner(&mut writer, log_msg, now).is_err() {
+            error!("Couldn't write log message: {}: {}", log_msg.level.to_str(), log_msg.msg);
         }
     }
 
@@ -41,11 +38,9 @@ impl LogFormatConfig {
         writer: &mut impl std::fmt::Write,
         log_msg: &LogMessage,
         now: DateTime<Utc>,
-        sev: &str,
-        msg: &str,
     ) -> std::fmt::Result {
         // Write severity (5 chars left-aligned)
-        write!(writer, "{:<5} ", sev)?;
+        write!(writer, "{:<5} ", log_msg.level.to_str())?;
 
         // Write timestamp (8 chars right-aligned)
         let ts = log_msg
@@ -91,7 +86,7 @@ impl LogFormatConfig {
             write!(writer, "]")?;
         }
 
-        writeln!(writer, ": {msg}")
+        writeln!(writer, ": {}", log_msg.msg)
     }
 }
 
