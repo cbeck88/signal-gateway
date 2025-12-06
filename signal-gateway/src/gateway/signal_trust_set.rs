@@ -1,25 +1,25 @@
-//! Admin Signal UUIDs container with flexible deserialization.
+//! Signal trust set - a set of Signal UUIDs with optional safety numbers.
 //!
-//! Supports two formats:
-//! - Map: `{"uuid1": ["safety1", "safety2"], "uuid2": []}`
-//! - Sequence: `["uuid1", "uuid2"]` (treated as UUIDs with no safety numbers)
+//! Supports two deserialization formats:
+//! - Map: `{"uuid1": ["safety1", "safety2"], "uuid2": []}` - UUIDs with safety numbers
+//! - Sequence: `["uuid1", "uuid2"]` - UUIDs with no safety numbers (simpler)
 
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
 use std::fmt;
 
-/// Container for admin Signal UUIDs mapped to their optional safety numbers.
+/// A set of Signal UUIDs with optional safety numbers for trust verification.
 ///
 /// Can be deserialized from either:
 /// - A map of UUID -> safety numbers: `{"uuid1": ["12345..."], "uuid2": []}`
 /// - A sequence of UUIDs (no safety numbers): `["uuid1", "uuid2"]`
 #[derive(Clone, Debug, Default)]
-pub struct AdminSignalUuids {
+pub struct SignalTrustSet {
     map: HashMap<String, Vec<String>>,
 }
 
-impl AdminSignalUuids {
+impl SignalTrustSet {
     /// Create an empty container.
     pub fn new() -> Self {
         Self::default()
@@ -56,19 +56,19 @@ impl AdminSignalUuids {
     }
 }
 
-impl<'de> Deserialize<'de> for AdminSignalUuids {
+impl<'de> Deserialize<'de> for SignalTrustSet {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: Deserializer<'de>,
     {
-        deserializer.deserialize_any(AdminSignalUuidsVisitor)
+        deserializer.deserialize_any(SignalTrustSetVisitor)
     }
 }
 
-struct AdminSignalUuidsVisitor;
+struct SignalTrustSetVisitor;
 
-impl<'de> Visitor<'de> for AdminSignalUuidsVisitor {
-    type Value = AdminSignalUuids;
+impl<'de> Visitor<'de> for SignalTrustSetVisitor {
+    type Value = SignalTrustSet;
 
     fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
         formatter.write_str("a map of UUIDs to safety numbers, or a sequence of UUIDs")
@@ -82,7 +82,7 @@ impl<'de> Visitor<'de> for AdminSignalUuidsVisitor {
         while let Some((key, value)) = access.next_entry::<String, Vec<String>>()? {
             map.insert(key, value);
         }
-        Ok(AdminSignalUuids { map })
+        Ok(SignalTrustSet { map })
     }
 
     fn visit_seq<S>(self, mut access: S) -> Result<Self::Value, S::Error>
@@ -93,11 +93,11 @@ impl<'de> Visitor<'de> for AdminSignalUuidsVisitor {
         while let Some(uuid) = access.next_element::<String>()? {
             map.insert(uuid, Vec::new());
         }
-        Ok(AdminSignalUuids { map })
+        Ok(SignalTrustSet { map })
     }
 }
 
-impl FromIterator<String> for AdminSignalUuids {
+impl FromIterator<String> for SignalTrustSet {
     fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
         Self {
             map: iter.into_iter().map(|uuid| (uuid, Vec::new())).collect(),
@@ -105,7 +105,7 @@ impl FromIterator<String> for AdminSignalUuids {
     }
 }
 
-impl FromIterator<(String, Vec<String>)> for AdminSignalUuids {
+impl FromIterator<(String, Vec<String>)> for SignalTrustSet {
     fn from_iter<I: IntoIterator<Item = (String, Vec<String>)>>(iter: I) -> Self {
         Self {
             map: iter.into_iter().collect(),
@@ -113,7 +113,7 @@ impl FromIterator<(String, Vec<String>)> for AdminSignalUuids {
     }
 }
 
-impl<'a> IntoIterator for &'a AdminSignalUuids {
+impl<'a> IntoIterator for &'a SignalTrustSet {
     type Item = (&'a String, &'a Vec<String>);
     type IntoIter = std::collections::hash_map::Iter<'a, String, Vec<String>>;
 
@@ -129,7 +129,7 @@ mod tests {
     #[test]
     fn test_deserialize_map() {
         let json = r#"{"uuid1": ["safety1", "safety2"], "uuid2": []}"#;
-        let uuids: AdminSignalUuids = serde_json::from_str(json).unwrap();
+        let uuids: SignalTrustSet = serde_json::from_str(json).unwrap();
 
         assert_eq!(uuids.len(), 2);
         assert!(uuids.contains("uuid1"));
@@ -141,7 +141,7 @@ mod tests {
     #[test]
     fn test_deserialize_seq() {
         let json = r#"["uuid1", "uuid2", "uuid3"]"#;
-        let uuids: AdminSignalUuids = serde_json::from_str(json).unwrap();
+        let uuids: SignalTrustSet = serde_json::from_str(json).unwrap();
 
         assert_eq!(uuids.len(), 3);
         assert!(uuids.contains("uuid1"));
@@ -156,14 +156,14 @@ mod tests {
     #[test]
     fn test_empty_map() {
         let json = r#"{}"#;
-        let uuids: AdminSignalUuids = serde_json::from_str(json).unwrap();
+        let uuids: SignalTrustSet = serde_json::from_str(json).unwrap();
         assert!(uuids.is_empty());
     }
 
     #[test]
     fn test_empty_seq() {
         let json = r#"[]"#;
-        let uuids: AdminSignalUuids = serde_json::from_str(json).unwrap();
+        let uuids: SignalTrustSet = serde_json::from_str(json).unwrap();
         assert!(uuids.is_empty());
     }
 }

@@ -28,8 +28,8 @@ use tokio::{
 use tokio_util::{bytes::Buf, sync::CancellationToken};
 use tracing::{debug, error, info, warn};
 
-mod admin_uuids;
-pub use admin_uuids::AdminSignalUuids;
+mod signal_trust_set;
+pub use signal_trust_set::SignalTrustSet;
 
 mod log_buffer;
 mod log_handler;
@@ -65,7 +65,7 @@ pub struct GatewayConfig {
     /// Admin UUIDs mapped to their safety numbers (can be empty).
     /// Accepts either a map `{"uuid1": ["12345..."], "uuid2": []}` or a list `["uuid1", "uuid2"]`.
     #[conf(long, env, value_parser = serde_json::from_str)]
-    pub admin_signal_uuids: AdminSignalUuids,
+    pub admin_signal_uuids: SignalTrustSet,
     /// If set, alerts are sent to this group instead of individual admins.
     #[conf(long, env)]
     pub alert_group_id: Option<String>,
