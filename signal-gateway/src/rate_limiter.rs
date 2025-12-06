@@ -11,20 +11,22 @@ use std::{
 
 /// Represents a rate threshold, expressed as a string in the format:
 ///
-/// * `1 / 10s`
-/// * `2 / 5m`
-/// * `3 / 1h`
-/// * `> 1 / 10s`
-/// * `>= 2 / 10s`
+/// * `>= 2 / 10s` - burst detection: alert when rate >= 2 per 10s
+/// * `> 1 / 10s` - burst detection: alert when rate > 1 per 10s (same as >= 2)
+/// * `< 3 / 5m` - suppression: alert when rate < 3 per 5m
+/// * `<= 2 / 5m` - suppression: alert when rate <= 2 per 5m (same as < 3)
 ///
-/// When the comparator is omitted, it is treated as `>=`
+/// The comparator must be specified (>=, >, <, or <=).
 #[derive(Clone, Copy, Debug, Deserialize)]
 #[serde(try_from = "String")]
 pub struct RateThreshold {
-    /// Number of events required to trigger the threshold.
+    /// Number of events for the threshold comparison.
     pub times: usize,
     /// Time window for counting events.
     pub duration: Duration,
+    /// If true, alert when rate >= times/duration (burst detection).
+    /// If false, alert when rate < times/duration (suppression).
+    pub comparator_is_ge: bool,
 }
 
 impl FromStr for RateThreshold {
@@ -42,13 +44,7 @@ impl FromStr for RateThreshold {
         let (comparator, num) = if let Some(mid) = maybe_mid {
             first.split_at(mid)
         } else {
-            ("", first)
-        };
-
-        let is_greater_equal = match comparator.trim() {
-            ">" => false,
-            ">=" | "=>" | "" => true,
-            _ => return Err(format!("Unexpected comparator format: {comparator}")),
+            return Err("missing comparator (>=, >, <, or <=)".into());
         };
 
         let num = num.trim();
@@ -56,15 +52,33 @@ impl FromStr for RateThreshold {
             .parse()
             .map_err(|err| format!("invalid number {num}: {err}"))?;
 
-        if !is_greater_equal {
-            times += 1;
-        }
+        // Normalize to either >= (comparator_is_ge=true) or < (comparator_is_ge=false)
+        let comparator_is_ge = match comparator.trim() {
+            ">=" | "=>" => true,
+            ">" => {
+                // > N is equivalent to >= N+1
+                times += 1;
+                true
+            }
+            "<" => false,
+            "<=" | "=<" => {
+                // <= N is equivalent to < N+1
+                times += 1;
+                false
+            }
+            "" => return Err("missing comparator (>=, >, <, or <=)".into()),
+            _ => return Err(format!("unexpected comparator: {comparator}")),
+        };
 
         if times == 0 {
-            return Err("Invalid threshold, times must be > 0".into());
+            return Err("invalid threshold: times must be > 0".into());
         }
 
-        Ok(RateThreshold { times, duration })
+        Ok(RateThreshold {
+            times,
+            duration,
+            comparator_is_ge,
+        })
     }
 }
 
@@ -222,14 +236,18 @@ pub struct MultiRateLimiter {
     idx: usize,
     /// The length of the window (in seconds)
     window: i64,
+    /// If true, returns true when rate >= threshold (burst detection).
+    /// If false, returns true when rate < threshold (suppression).
+    comparator_is_ge: bool,
 }
 
 impl MultiRateLimiter {
-    pub fn new(num: usize, window: Duration) -> Self {
+    pub fn new(num: usize, window: Duration, comparator_is_ge: bool) -> Self {
         Self {
             idx: 0,
             timestamps: vec![Default::default(); num],
             window: window.as_secs().try_into().unwrap(),
+            comparator_is_ge,
         }
     }
 
@@ -239,21 +257,31 @@ impl MultiRateLimiter {
     pub fn evaluate(&mut self, new_timestamp: i64) -> bool {
         let oldest = self.timestamps[self.idx];
         if oldest >= new_timestamp {
-            return false;
+            // Duplicate timestamp - for burst detection return current state,
+            // for suppression return inverted
+            return !self.comparator_is_ge;
         }
         self.timestamps[self.idx] = new_timestamp;
         self.idx += 1;
         self.idx %= self.timestamps.len();
         let next_oldest = self.timestamps[self.idx];
         // If the next oldest is within 'window' of the new timestamp,
-        // then all of the most recent n are. Otherwise, at most n-1 of the most recent are.
-        next_oldest + self.window >= new_timestamp
+        // then all of the most recent n are within the window.
+        let threshold_met = next_oldest + self.window >= new_timestamp;
+
+        if self.comparator_is_ge {
+            // Burst detection: alert when rate >= threshold
+            threshold_met
+        } else {
+            // Suppression: alert when rate < threshold
+            !threshold_met
+        }
     }
 }
 
 impl From<RateThreshold> for MultiRateLimiter {
     fn from(src: RateThreshold) -> Self {
-        Self::new(src.times, src.duration)
+        Self::new(src.times, src.duration, src.comparator_is_ge)
     }
 }
 
@@ -264,33 +292,48 @@ mod tests {
 
     #[test]
     fn parse_rate_threshold() {
-        let threshold = RateThreshold::from_str("1/10s").unwrap();
+        // >= N: burst detection, alert when rate >= N
+        let threshold = RateThreshold::from_str(">= 1 / 10s").unwrap();
         assert_eq!(threshold.times, 1);
         assert_eq!(threshold.duration, Duration::from_secs(10));
-        let threshold = RateThreshold::from_str("1 / 10s").unwrap();
-        assert_eq!(threshold.times, 1);
-        assert_eq!(threshold.duration, Duration::from_secs(10));
+        assert!(threshold.comparator_is_ge);
 
-        let threshold = RateThreshold::from_str("2 / 5m").unwrap();
+        let threshold = RateThreshold::from_str(">=2 / 5m").unwrap();
         assert_eq!(threshold.times, 2);
         assert_eq!(threshold.duration, Duration::from_secs(300));
+        assert!(threshold.comparator_is_ge);
 
+        // > N: normalizes to >= N+1
         let threshold = RateThreshold::from_str("> 3 / 10m").unwrap();
         assert_eq!(threshold.times, 4);
         assert_eq!(threshold.duration, Duration::from_secs(600));
+        assert!(threshold.comparator_is_ge);
 
-        let threshold = RateThreshold::from_str(">=3/10m").unwrap();
+        // < N: suppression, alert when rate < N
+        let threshold = RateThreshold::from_str("< 5 / 1h").unwrap();
+        assert_eq!(threshold.times, 5);
+        assert_eq!(threshold.duration, Duration::from_secs(3600));
+        assert!(!threshold.comparator_is_ge);
+
+        // <= N: normalizes to < N+1
+        let threshold = RateThreshold::from_str("<= 2 / 30s").unwrap();
         assert_eq!(threshold.times, 3);
-        assert_eq!(threshold.duration, Duration::from_secs(600));
+        assert_eq!(threshold.duration, Duration::from_secs(30));
+        assert!(!threshold.comparator_is_ge);
+
+        // Missing comparator should error
+        assert!(RateThreshold::from_str("1 / 10s").is_err());
+        assert!(RateThreshold::from_str("5/10s").is_err());
     }
 
     #[test]
     fn source_location_rate_limiter_basic() {
-        // Threshold: 1 event per 600 seconds per location
+        // Threshold: >= 1 event per 600 seconds per location (burst detection)
         // Returns true when there's at least 1 event in the window
         let threshold = RateThreshold {
             times: 1,
             duration: Duration::from_secs(600),
+            comparator_is_ge: true,
         };
         let mut limiter = SourceLocationRateLimiter::new(threshold, 100);
 
@@ -309,11 +352,12 @@ mod tests {
 
     #[test]
     fn source_location_rate_limiter_with_count() {
-        // Threshold: 3 events per 600 seconds per location
+        // Threshold: >= 3 events per 600 seconds per location (burst detection)
         // Returns true when there are at least 3 events in the window
         let threshold = RateThreshold {
             times: 3,
             duration: Duration::from_secs(600),
+            comparator_is_ge: true,
         };
         let mut limiter = SourceLocationRateLimiter::new(threshold, 100);
 
@@ -335,10 +379,11 @@ mod tests {
 
     #[test]
     fn source_location_rate_limiter_different_lines_same_file() {
-        // Threshold: 2 events per 600 seconds per location
+        // Threshold: >= 2 events per 600 seconds per location (burst detection)
         let threshold = RateThreshold {
             times: 2,
             duration: Duration::from_secs(600),
+            comparator_is_ge: true,
         };
         let mut limiter = SourceLocationRateLimiter::new(threshold, 100);
 
@@ -354,11 +399,37 @@ mod tests {
     }
 
     #[test]
+    fn source_location_rate_limiter_suppression() {
+        // Threshold: < 3 events per 600 seconds per location (suppression)
+        // Returns true when there are fewer than 3 events in the window
+        let threshold = RateThreshold {
+            times: 3,
+            duration: Duration::from_secs(600),
+            comparator_is_ge: false,
+        };
+        let mut limiter = SourceLocationRateLimiter::new(threshold, 100);
+
+        // First two alerts pass (< 3 events in window)
+        assert!(limiter.evaluate("file.rs", "10", 1000));
+        assert!(limiter.evaluate("file.rs", "10", 1100));
+
+        // Third alert suppressed (now have 3 in window, not < 3)
+        assert!(!limiter.evaluate("file.rs", "10", 1200));
+
+        // Fourth also suppressed (still >= 3 in window)
+        assert!(!limiter.evaluate("file.rs", "10", 1300));
+
+        // After window expires, first event passes again
+        assert!(limiter.evaluate("file.rs", "10", 2000));
+    }
+
+    #[test]
     fn source_location_rate_limiter_cleanup() {
         // Use small max_entries to trigger cleanup
         let threshold = RateThreshold {
             times: 1,
             duration: Duration::from_secs(600),
+            comparator_is_ge: true,
         };
         let mut limiter = SourceLocationRateLimiter::new(threshold, 3);
 
