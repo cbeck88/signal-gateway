@@ -1,6 +1,8 @@
-use super::log_buffer::LogBuffer;
-use super::route::{Destination, Limit, Route};
-use super::{LimitResult, Limiter, LimiterSet, SignalAlertMessage, Summary};
+use super::{
+    LimitResult, Limiter, LimiterSet, SignalAlertMessage, Summary,
+    log_buffer::LogBuffer,
+    route::{Destination, Limit, Route},
+};
 use crate::{
     concurrent_map::ConcurrentMap,
     log_format::LogFormatConfig,

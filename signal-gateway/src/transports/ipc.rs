@@ -1,13 +1,11 @@
-use std::io::Error;
-use std::path::Path;
+use std::{io::Error, path::Path};
 
 use futures_util::stream::StreamExt;
 use jsonrpsee::core::client::{TransportReceiverT, TransportSenderT};
 use tokio::net::UnixStream;
 use tokio_util::codec::Decoder;
 
-use super::stream_codec::StreamCodec;
-use super::{Receiver, Sender};
+use super::{Receiver, Sender, stream_codec::StreamCodec};
 
 /// Connect to a JSON-RPC server via Unix domain socket.
 pub async fn connect(

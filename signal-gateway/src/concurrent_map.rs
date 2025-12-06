@@ -4,8 +4,7 @@
 //! where values already exist, using a read lock first before falling back to a
 //! write lock for insertions.
 
-use std::collections::HashMap;
-use std::hash::Hash;
+use std::{collections::HashMap, hash::Hash};
 use tokio::sync::RwLock;
 
 /// A concurrent hash map that uses read-preferring locking.

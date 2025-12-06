@@ -4,8 +4,7 @@
 
 use conf::{Conf, Subcommands};
 use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
-use hyper_util::server::conn::auto;
+use hyper_util::{rt::TokioIo, server::conn::auto};
 use signal_gateway::{Gateway, GatewayConfig};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::net::TcpListener;

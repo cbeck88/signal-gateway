@@ -1,0 +1,4 @@
+edition = "2024"
+
+# Merge imports from the same crate into one use statement
+imports_granularity = "Crate"

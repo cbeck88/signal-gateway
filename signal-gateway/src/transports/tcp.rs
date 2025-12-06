@@ -5,8 +5,7 @@ use jsonrpsee::core::client::{TransportReceiverT, TransportSenderT};
 use tokio::net::{TcpStream, ToSocketAddrs};
 use tokio_util::codec::Decoder;
 
-use super::stream_codec::StreamCodec;
-use super::{Receiver, Sender};
+use super::{Receiver, Sender, stream_codec::StreamCodec};
 
 /// Connect to a JSON-RPC TCP server.
 pub async fn connect(

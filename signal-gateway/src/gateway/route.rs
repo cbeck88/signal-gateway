@@ -4,8 +4,10 @@
 //! and destination overrides.
 
 use super::rate_limiter_set::LimiterSet;
-use crate::log_message::{Level, LogFilter};
-use crate::rate_limiter::{Limiter, RateThreshold};
+use crate::{
+    log_message::{Level, LogFilter},
+    rate_limiter::{Limiter, RateThreshold},
+};
 use serde::Deserialize;
 
 /// A rate limit rule for suppressing repeated alerts.

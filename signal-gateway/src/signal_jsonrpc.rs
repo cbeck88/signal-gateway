@@ -1,9 +1,7 @@
 //! This copied from https://github.com/AsamK/signal-cli/blob/f9a36c6e0404d06bd396b24b5ea699e49ed29b89/client/src/jsonrpc.rs
 #![allow(clippy::too_many_arguments)]
 
-use jsonrpsee::async_client::ClientBuilder;
-use jsonrpsee::core::client::SubscriptionClientT;
-use jsonrpsee::proc_macros::rpc;
+use jsonrpsee::{async_client::ClientBuilder, core::client::SubscriptionClientT, proc_macros::rpc};
 use serde::Deserialize;
 use serde_json::Value;
 use tokio::net::ToSocketAddrs;

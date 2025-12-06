@@ -1,7 +1,9 @@
 //! Rate limiter set for managing per-route rate limiting.
 
-use crate::log_message::{LogMessage, Origin};
-use crate::rate_limiter::Limiter;
+use crate::{
+    log_message::{LogMessage, Origin},
+    rate_limiter::Limiter,
+};
 use std::collections::HashMap;
 
 /// Result of evaluating a limiter set.

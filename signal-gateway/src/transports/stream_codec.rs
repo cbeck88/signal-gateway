@@ -1,8 +1,10 @@
 //! This copied from https://github.com/AsamK/signal-cli/blob/f9a36c6e0404d06bd396b24b5ea699e49ed29b89/client/src/jsonrpc.rs
 
 use std::{io, str};
-use tokio_util::bytes::BytesMut;
-use tokio_util::codec::{Decoder, Encoder};
+use tokio_util::{
+    bytes::BytesMut,
+    codec::{Decoder, Encoder},
+};
 
 type Separator = u8;
 

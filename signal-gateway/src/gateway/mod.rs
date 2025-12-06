@@ -20,8 +20,7 @@ use http::{Method, Request, Response, StatusCode};
 use http_body::Body;
 use http_body_util::BodyExt;
 use prometheus_http_client::{AlertStatus, ExtractLabels};
-use std::time::Duration;
-use std::{collections::HashMap, fmt::Write, net::SocketAddr, path::PathBuf};
+use std::{collections::HashMap, fmt::Write, net::SocketAddr, path::PathBuf, time::Duration};
 use tokio::{
     join,
     sync::{
@@ -29,8 +28,7 @@ use tokio::{
         mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     },
 };
-use tokio_util::bytes::Buf;
-use tokio_util::sync::CancellationToken;
+use tokio_util::{bytes::Buf, sync::CancellationToken};
 use tracing::{debug, error, info, warn};
 
 mod log_buffer;

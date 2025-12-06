@@ -2,8 +2,7 @@
 //!
 //! Wraps a circular buffer with a synchronous mutex for fast, blocking access.
 
-use crate::circular_buffer::CircularBuffer;
-use crate::log_message::LogMessage;
+use crate::{circular_buffer::CircularBuffer, log_message::LogMessage};
 use std::sync::Mutex;
 
 /// A thread-safe circular buffer for log messages.
