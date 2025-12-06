@@ -48,7 +48,7 @@ impl AdminHandlerCommand {
 
 /// Top-level configuration for signal-gateway.
 #[derive(Conf, Debug)]
-#[conf(serde)]
+#[conf(serde, test)]
 pub struct Config {
     /// If true, just validate config and don't start
     #[conf(long)]
