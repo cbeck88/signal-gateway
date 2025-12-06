@@ -52,10 +52,10 @@ pub struct Route {
     #[serde(default = "default_alert_level")]
     pub alert_level: Level,
 
-    /// Optional filter to match log messages for this route.
-    /// If not specified, the route matches all messages.
-    #[serde(default)]
-    pub filter: Option<LogFilter>,
+    /// Filter to match log messages for this route.
+    /// If all filter fields are empty, the route matches all messages.
+    #[serde(flatten)]
+    pub filter: LogFilter,
 
     /// Optional destination override for alerts from this route.
     /// If not specified, alerts go to the default admin destination.
@@ -93,7 +93,7 @@ impl Default for Route {
     fn default() -> Self {
         Self {
             alert_level: default_alert_level(),
-            filter: None,
+            filter: LogFilter::default(),
             destination: None,
             limit: Vec::new(),
             global_limit: Vec::new(),

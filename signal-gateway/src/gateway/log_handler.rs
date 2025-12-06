@@ -241,8 +241,8 @@ impl LogHandler {
                 continue;
             }
 
-            // Check if message matches route's filter (if any)
-            if !route.filter.as_ref().is_none_or(|f| f.matches(log_msg)) {
+            // Check if message matches route's filter
+            if !route.filter.matches(log_msg) {
                 continue;
             }
 
