@@ -170,6 +170,9 @@ struct AdminMessage {
     /// Short summary for logging (e.g., alert names for prometheus).
     /// If None, the consumer will use a truncated slice of `text` for logging.
     summary: Option<String>,
+    /// Optional destination override from route configuration.
+    /// If present, overrides the default alert destination.
+    destination_override: Option<Destination>,
 }
 
 /// The gateway manages sending messages to signal-cli and receiving messages from signal-cli.
@@ -390,11 +393,18 @@ impl Gateway {
                             msg.text
                         };
                         let attachments = msg.attachment_paths.into_iter().map(|p| p.to_str().unwrap().to_owned()).collect();
-                        // Send to group if configured, otherwise to individual admins
-                        let target = if let Some(group_id) = &self.config.alert_group_id {
-                            MessageTarget::Group(group_id.clone())
-                        } else {
-                            MessageTarget::Recipients(self.config.admin_uuids())
+                        // Use destination override if present, otherwise use configured default
+                        let target = match msg.destination_override {
+                            Some(Destination::Group(group_id)) => MessageTarget::Group(group_id),
+                            Some(Destination::Recipients(recipients)) => MessageTarget::Recipients(recipients),
+                            None => {
+                                // Send to group if configured, otherwise to individual admins
+                                if let Some(group_id) = &self.config.alert_group_id {
+                                    MessageTarget::Group(group_id.clone())
+                                } else {
+                                    MessageTarget::Recipients(self.config.admin_uuids())
+                                }
+                            }
                         };
                         SignalMessage {
                             sender: self.config.signal_account.clone(),
@@ -758,6 +768,7 @@ impl Gateway {
                 text,
                 attachment_paths,
                 summary: Some(summary),
+                destination_override: None,
             })
             .map_err(|_err| {
                 error!("Could not send alert message, queue is closed");

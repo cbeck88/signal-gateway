@@ -188,12 +188,13 @@ impl LogHandler {
 
         // Send alert if we have formatted text
         if let Some(text) = formatted_text {
-            // TODO: Use destination override from rate_limit_result.ok() if present
+            let destination_override = rate_limit_result.ok().flatten();
             if let Err(_err) = self.admin_mq_tx.send(AdminMessage {
                 origin: Some(origin),
                 text,
                 attachment_paths: Default::default(),
                 summary: None,
+                destination_override,
             }) {
                 error!("Could not send alert message, queue is closed");
             }
