@@ -4,11 +4,12 @@
 //! - Map: `{"uuid1": ["safety1", "safety2"], "uuid2": []}` - UUIDs with safety numbers
 //! - Sequence: `["uuid1", "uuid2"]` - UUIDs with no safety numbers (simpler)
 
-use crate::signal_jsonrpc::Envelope;
+use crate::signal_jsonrpc::{Envelope, Identity, RpcClient};
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
 use std::fmt;
+use tracing::{debug, info, warn};
 
 /// A set of Signal UUIDs with optional safety numbers for trust verification.
 ///
@@ -57,6 +58,145 @@ impl SignalTrustSet {
     /// Get safety numbers for a specific UUID.
     pub fn get(&self, uuid: &str) -> Option<&Vec<String>> {
         self.map.get(uuid)
+    }
+
+    /// Update trust for all UUIDs with safety numbers configured.
+    ///
+    /// For each UUID with safety numbers:
+    /// 1. Check current identities in signal-cli via listIdentities
+    /// 2. If any trusted identity is NOT in our config, remove the contact entirely and re-add only configured ones
+    /// 3. Otherwise, just trust any new safety numbers from config that aren't already trusted
+    ///
+    /// Returns an error if any trust operation fails.
+    pub async fn update_trust(
+        &self,
+        signal_cli: &impl RpcClient,
+        signal_account: &str,
+    ) -> Result<(), String> {
+        info!("Updating trust for {} configured UUIDs", self.map.len());
+
+        for (uuid, safety_numbers) in &self.map {
+            if safety_numbers.is_empty() {
+                continue;
+            }
+
+            // Get current identities from signal-cli
+            let current_identities: Vec<Identity> = match signal_cli
+                .list_identities(Some(signal_account.to_owned()), Some(uuid.clone()))
+                .await
+            {
+                Ok(value) => serde_json::from_value(value).unwrap_or_default(),
+                Err(err) => {
+                    debug!("Could not list identities for {uuid} (may not exist yet): {err}");
+                    Vec::new()
+                }
+            };
+
+            // Check if any trusted identity in signal-cli is NOT in our config
+            let has_revoked_identity = current_identities.iter().any(|id| {
+                id.trust_level.is_trusted() && !safety_numbers.contains(&id.safety_number)
+            });
+
+            if has_revoked_identity {
+                // Log which identities are being revoked
+                for id in &current_identities {
+                    if id.trust_level.is_trusted() && !safety_numbers.contains(&id.safety_number) {
+                        warn!(
+                            "Revoking trust for {uuid}: safety number {} is trusted in signal-cli but not in config",
+                            id.safety_number
+                        );
+                    }
+                }
+
+                // Remove contact to clear all existing trust
+                warn!("Resetting all trust for {uuid} due to revoked identity");
+                signal_cli
+                    .remove_contact(
+                        Some(signal_account.to_owned()),
+                        uuid.clone(),
+                        true,  // forget - delete identity keys and sessions
+                        false, // hide
+                    )
+                    .await
+                    .map_err(|err| format!("Failed to remove contact {uuid}: {err}"))?;
+
+                // Re-add all configured safety numbers
+                for safety_number in safety_numbers {
+                    info!("Trusting safety number for {uuid}");
+                    signal_cli
+                        .trust(
+                            Some(signal_account.to_owned()),
+                            uuid.clone(),
+                            false,
+                            Some(safety_number.clone()),
+                        )
+                        .await
+                        .map_err(|err| format!("Failed to trust {uuid}: {err}"))?;
+                }
+
+                // Verify the reset worked correctly
+                let new_identities: Vec<Identity> = signal_cli
+                    .list_identities(Some(signal_account.to_owned()), Some(uuid.clone()))
+                    .await
+                    .map_err(|err| format!("Failed to verify trust reset for {uuid}: {err}"))
+                    .and_then(|value| {
+                        serde_json::from_value(value)
+                            .map_err(|err| format!("Failed to parse identities for {uuid}: {err}"))
+                    })?;
+
+                let trusted_now: Vec<_> = new_identities
+                    .iter()
+                    .filter(|id| id.trust_level.is_trusted())
+                    .map(|id| &id.safety_number)
+                    .collect();
+
+                // Check all configured safety numbers are now trusted
+                for safety_number in safety_numbers {
+                    if !trusted_now.contains(&safety_number) {
+                        return Err(format!(
+                            "Verification failed for {uuid}: safety number {} should be trusted but isn't",
+                            safety_number
+                        ));
+                    }
+                }
+
+                // Check no unexpected safety numbers are trusted
+                for sn in &trusted_now {
+                    if !safety_numbers.contains(sn) {
+                        return Err(format!(
+                            "Verification failed for {uuid}: safety number {} is trusted but not in config",
+                            sn
+                        ));
+                    }
+                }
+
+                info!("Trust reset verified for {uuid}: {} safety numbers trusted", trusted_now.len());
+            } else {
+                // Just add any new safety numbers that aren't already trusted
+                let already_trusted: Vec<_> = current_identities
+                    .iter()
+                    .filter(|id| id.trust_level.is_trusted())
+                    .map(|id| &id.safety_number)
+                    .collect();
+
+                for safety_number in safety_numbers {
+                    if !already_trusted.contains(&safety_number) {
+                        info!("Trusting new safety number for {uuid}");
+                        signal_cli
+                            .trust(
+                                Some(signal_account.to_owned()),
+                                uuid.clone(),
+                                false,
+                                Some(safety_number.clone()),
+                            )
+                            .await
+                            .map_err(|err| format!("Failed to trust {uuid}: {err}"))?;
+                    }
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 

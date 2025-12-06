@@ -10,7 +10,7 @@ use crate::{
     },
     prometheus::{Prometheus, PrometheusConfig},
     signal_jsonrpc::{
-        Envelope, Identity, MessageTarget, RpcClient, RpcClientError, SignalMessage, connect_tcp,
+        Envelope, MessageTarget, RpcClient, RpcClientError, SignalMessage, connect_tcp,
     },
 };
 use chrono::Utc;
@@ -297,110 +297,26 @@ impl Gateway {
         unreachable!("one_of_fields should ensure exactly one transport is configured")
     }
 
-    /// Update trust for admins with safety numbers configured.
-    ///
-    /// For each admin with safety numbers:
-    /// 1. Check current identities in signal-cli via listIdentities
-    /// 2. If any trusted identity is NOT in our config, remove the contact entirely and re-add only configured ones
-    /// 3. Otherwise, just trust any new safety numbers from config that aren't already trusted
-    async fn update_trust(&self, signal_cli: &impl RpcClient) {
-        for (uuid, safety_numbers) in &self.config.admin_signal_uuids {
-            if safety_numbers.is_empty() {
-                continue;
-            }
-
-            // Get current identities from signal-cli
-            let current_identities: Vec<Identity> = match signal_cli
-                .list_identities(Some(self.config.signal_account.clone()), Some(uuid.clone()))
-                .await
-            {
-                Ok(value) => serde_json::from_value(value).unwrap_or_default(),
-                Err(err) => {
-                    debug!("Could not list identities for {uuid} (may not exist yet): {err}");
-                    Vec::new()
-                }
-            };
-
-            // Check if any trusted identity in signal-cli is NOT in our config
-            let has_revoked_identity = current_identities.iter().any(|id| {
-                id.trust_level.is_trusted() && !safety_numbers.contains(&id.safety_number)
-            });
-
-            if has_revoked_identity {
-                // Log which identities are being revoked
-                for id in &current_identities {
-                    if id.trust_level.is_trusted() && !safety_numbers.contains(&id.safety_number) {
-                        warn!(
-                            "Revoking trust for admin {uuid}: safety number {} is trusted but not in config",
-                            id.safety_number
-                        );
-                    }
-                }
-
-                // Remove contact to clear all existing trust
-                info!("Resetting trust for admin {uuid}");
-                if let Err(err) = signal_cli
-                    .remove_contact(
-                        Some(self.config.signal_account.clone()),
-                        uuid.clone(),
-                        true,  // forget - delete identity keys and sessions
-                        false, // hide
-                    )
-                    .await
-                {
-                    error!("Failed to remove contact {uuid}: {err}");
-                    continue;
-                }
-
-                // Re-add all configured safety numbers
-                for safety_number in safety_numbers {
-                    info!("Trusting safety number for admin {uuid}");
-                    if let Err(err) = signal_cli
-                        .trust(
-                            Some(self.config.signal_account.clone()),
-                            uuid.clone(),
-                            false,
-                            Some(safety_number.clone()),
-                        )
-                        .await
-                    {
-                        error!("Failed to trust admin {uuid}: {err}");
-                    }
-                }
-            } else {
-                // Just add any new safety numbers that aren't already trusted
-                let already_trusted: Vec<_> = current_identities
-                    .iter()
-                    .filter(|id| id.trust_level.is_trusted())
-                    .map(|id| &id.safety_number)
-                    .collect();
-
-                for safety_number in safety_numbers {
-                    if !already_trusted.contains(&safety_number) {
-                        info!("Trusting new safety number for admin {uuid}");
-                        if let Err(err) = signal_cli
-                            .trust(
-                                Some(self.config.signal_account.clone()),
-                                uuid.clone(),
-                                false,
-                                Some(safety_number.clone()),
-                            )
-                            .await
-                        {
-                            error!("Failed to trust admin {uuid}: {err}");
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     async fn do_run(
         &self,
         signal_cli: &impl RpcClient,
         alert_rx: &mut UnboundedReceiver<SignalAlertMessage>,
     ) -> Result<(), RpcClientError> {
-        self.update_trust(signal_cli).await;
+        // Retry trust update until it succeeds
+        loop {
+            match self
+                .config
+                .admin_signal_uuids
+                .update_trust(signal_cli, &self.config.signal_account)
+                .await
+            {
+                Ok(()) => break,
+                Err(err) => {
+                    error!("Trust update failed: {err}");
+                    tokio::time::sleep(Duration::from_secs(10)).await;
+                }
+            }
+        }
 
         let mut signal_rx = signal_cli
             .subscribe_receive(Some(self.config.signal_account.clone()))
