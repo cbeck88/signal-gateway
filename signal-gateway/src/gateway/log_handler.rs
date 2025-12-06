@@ -113,7 +113,7 @@ impl LogHandler {
     /// If `filter` is provided, only origins matching the filter are included.
     pub async fn format_logs(&self, filter: Option<&str>) -> String {
         self.log_buffers
-            .read_all(|buffers| {
+            .with_read_lock(|buffers| {
                 if buffers.is_empty() {
                     return "No log sources registered yet".to_string();
                 }

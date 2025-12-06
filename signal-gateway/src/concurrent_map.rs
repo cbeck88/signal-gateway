@@ -63,7 +63,7 @@ where
     ///
     /// Acquires a read lock and calls `access` with a reference to the underlying HashMap.
     /// The lock is held while `access` runs.
-    pub async fn read_all<R, A>(&self, access: A) -> R
+    pub async fn with_read_lock<R, A>(&self, access: A) -> R
     where
         A: FnOnce(&HashMap<K, V>) -> R,
     {
