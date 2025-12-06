@@ -1,6 +1,6 @@
 use super::log_buffer::LogBuffer;
 use super::route::{Destination, Limit, Route};
-use super::{LimitResult, Limiter, LimiterSet, SignalAlertMessage};
+use super::{LimitResult, Limiter, LimiterSet, SignalAlertMessage, Summary};
 use crate::{
     concurrent_map::ConcurrentMap,
     log_format::LogFormatConfig,
@@ -203,7 +203,7 @@ impl LogHandler {
                 origin: Some(origin),
                 text,
                 attachment_paths: Default::default(),
-                summary: None,
+                summary: Summary::Prefix(512),
                 destination_override,
             }) {
                 error!("Could not send alert message, queue is closed");

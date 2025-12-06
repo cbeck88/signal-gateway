@@ -159,6 +159,21 @@ fn parse_gateway_command(s: &str) -> Result<GatewayCommand, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Summary for logging an alert message.
+#[derive(Clone, Debug)]
+enum Summary {
+    /// Use a prefix of the message text (capped at 512 chars).
+    Prefix(usize),
+    /// Use an owned summary string.
+    Owned(Box<str>),
+}
+
+impl Default for Summary {
+    fn default() -> Self {
+        Summary::Prefix(512)
+    }
+}
+
 /// A message queued to be sent to all admins.
 /// This is generally an alert message, which may have attached images.
 #[derive(Clone, Debug, Default)]
@@ -168,11 +183,23 @@ struct SignalAlertMessage {
     text: String,
     attachment_paths: Vec<PathBuf>,
     /// Short summary for logging (e.g., alert names for prometheus).
-    /// If None, the consumer will use a truncated slice of `text` for logging.
-    summary: Option<String>,
+    summary: Summary,
     /// Optional destination override from route configuration.
     /// If present, overrides the default alert destination.
     destination_override: Option<Destination>,
+}
+
+impl SignalAlertMessage {
+    /// Get the summary string for logging.
+    fn get_summary(&self) -> &str {
+        match &self.summary {
+            Summary::Owned(s) => s,
+            Summary::Prefix(n) => {
+                let len = self.text.len().min(*n).min(512);
+                &self.text[..len]
+            }
+        }
+    }
 }
 
 /// The gateway manages sending messages to signal-cli and receiving messages from signal-cli.
@@ -380,12 +407,7 @@ impl Gateway {
                 },
                 outbound_admin_msg = signal_alert_mq_rx.recv() => {
                     if let Some(msg) = outbound_admin_msg {
-                        // Log summary, or first 500 bytes of text if no summary provided
-                        let summary = msg.summary.as_deref().unwrap_or_else(|| {
-                            let len = msg.text.len().min(500);
-                            &msg.text[..len]
-                        });
-                        info!("Sending alert: {summary}");
+                        info!("Sending alert: {}", msg.get_summary());
                         // Prepend origin line if present
                         let message = if let Some(origin) = &msg.origin {
                             format!("[{origin}]\n{}", msg.text)
@@ -767,7 +789,7 @@ impl Gateway {
                 origin: None, // Prometheus alerts don't have a syslog origin
                 text,
                 attachment_paths,
-                summary: Some(summary),
+                summary: Summary::Owned(summary.into()),
                 destination_override: None,
             })
             .map_err(|_err| {
