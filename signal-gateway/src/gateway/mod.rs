@@ -162,7 +162,7 @@ fn parse_gateway_command(s: &str) -> Result<GatewayCommand, String> {
 /// A message queued to be sent to all admins.
 /// This is generally an alert message, which may have attached images.
 #[derive(Clone, Debug, Default)]
-struct AdminMessage {
+struct SignalAlertMessage {
     /// The origin of the message (app + host), if from syslog
     origin: Option<Origin>,
     text: String,
@@ -188,8 +188,8 @@ struct AdminMessage {
 /// and then the buffer is purged. This serves as a minimal log-aggregation and alerting system.
 pub struct Gateway {
     config: GatewayConfig,
-    admin_mq_tx: UnboundedSender<AdminMessage>,
-    admin_mq_rx: Mutex<UnboundedReceiver<AdminMessage>>,
+    signal_alert_mq_tx: UnboundedSender<SignalAlertMessage>,
+    signal_alert_mq_rx: Mutex<UnboundedReceiver<SignalAlertMessage>>,
     token: CancellationToken,
     prometheus: Option<Prometheus>,
     /// Log handler for processing log messages from all origins.
@@ -205,7 +205,7 @@ impl Gateway {
         token: CancellationToken,
         message_handler: Option<Box<dyn MessageHandler>>,
     ) -> Self {
-        let (admin_mq_tx, admin_mq_rx) = unbounded_channel();
+        let (signal_alert_mq_tx, signal_alert_mq_rx) = unbounded_channel();
 
         let prometheus = config
             .prometheus
@@ -214,12 +214,12 @@ impl Gateway {
             .transpose()
             .expect("Invalid prometheus config");
 
-        let log_handler = LogHandler::new(config.log_handler.clone(), admin_mq_tx.clone());
+        let log_handler = LogHandler::new(config.log_handler.clone(), signal_alert_mq_tx.clone());
 
         Self {
             config,
-            admin_mq_tx,
-            admin_mq_rx: Mutex::new(admin_mq_rx),
+            signal_alert_mq_tx,
+            signal_alert_mq_rx: Mutex::new(signal_alert_mq_rx),
             token,
             prometheus,
             log_handler,
@@ -364,8 +364,8 @@ impl Gateway {
     async fn do_run(&self, signal_cli: &impl RpcClient) -> Result<(), RpcClientError> {
         self.update_trust(signal_cli).await;
 
-        let mut admin_mq_rx = self
-            .admin_mq_rx
+        let mut signal_alert_mq_rx = self
+            .signal_alert_mq_rx
             .try_lock()
             .expect("Mutex should not be contended");
         let mut signal_rx = signal_cli
@@ -378,7 +378,7 @@ impl Gateway {
                     info!("Stop requested");
                     return Ok(());
                 },
-                outbound_admin_msg = admin_mq_rx.recv() => {
+                outbound_admin_msg = signal_alert_mq_rx.recv() => {
                     if let Some(msg) = outbound_admin_msg {
                         // Log summary, or first 500 bytes of text if no summary provided
                         let summary = msg.summary.as_deref().unwrap_or_else(|| {
@@ -413,7 +413,7 @@ impl Gateway {
                             attachments,
                         }.send(signal_cli).await?;
                     } else {
-                        warn!("admin_mq_rx is closed, halting service");
+                        warn!("signal_alert_mq_rx is closed, halting service");
                         self.token.cancel();
                         return Ok(());
                     }
@@ -762,8 +762,8 @@ impl Gateway {
             .collect::<Vec<_>>()
             .join(" ");
 
-        self.admin_mq_tx
-            .send(AdminMessage {
+        self.signal_alert_mq_tx
+            .send(SignalAlertMessage {
                 origin: None, // Prometheus alerts don't have a syslog origin
                 text,
                 attachment_paths,

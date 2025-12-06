@@ -1,6 +1,6 @@
 use super::log_buffer::LogBuffer;
 use super::route::{Destination, Limit, Route};
-use super::{AdminMessage, LimitResult, Limiter, LimiterSet};
+use super::{SignalAlertMessage, LimitResult, Limiter, LimiterSet};
 use crate::{
     concurrent_map::ConcurrentMap,
     log_format::LogFormatConfig,
@@ -74,7 +74,7 @@ pub struct LogHandlerConfig {
 #[derive(Debug)]
 pub struct LogHandler {
     config: LogHandlerConfig,
-    admin_mq_tx: UnboundedSender<AdminMessage>,
+    signal_alert_mq_tx: UnboundedSender<SignalAlertMessage>,
     /// Log buffers keyed by origin (app + host). Lazily created.
     log_buffers: ConcurrentMap<Origin, LogBuffer>,
     /// Routes with their associated limiter sets.
@@ -85,7 +85,7 @@ pub struct LogHandler {
 
 impl LogHandler {
     /// Initialize a new log handler
-    pub fn new(config: LogHandlerConfig, admin_mq_tx: UnboundedSender<AdminMessage>) -> Self {
+    pub fn new(config: LogHandlerConfig, signal_alert_mq_tx: UnboundedSender<SignalAlertMessage>) -> Self {
         let routes = config
             .routes
             .iter()
@@ -100,7 +100,7 @@ impl LogHandler {
 
         Self {
             config,
-            admin_mq_tx,
+            signal_alert_mq_tx,
             log_buffers: ConcurrentMap::new(),
             routes,
             overall_limits,
@@ -192,7 +192,7 @@ impl LogHandler {
         // Send alert if we have formatted text
         if let Some(text) = formatted_text {
             let destination_override = rate_limit_result.ok().flatten();
-            if let Err(_err) = self.admin_mq_tx.send(AdminMessage {
+            if let Err(_err) = self.signal_alert_mq_tx.send(SignalAlertMessage {
                 origin: Some(origin),
                 text,
                 attachment_paths: Default::default(),
