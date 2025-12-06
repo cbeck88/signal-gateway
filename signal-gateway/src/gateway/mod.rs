@@ -1,10 +1,10 @@
 //! Gateway for bridging alerts and logs with Signal messenger.
 
 #[cfg(unix)]
-use crate::jsonrpc::connect_ipc;
+use crate::signal_jsonrpc::connect_ipc;
 use crate::{
     alertmanager::AlertPost,
-    jsonrpc::{
+    signal_jsonrpc::{
         Envelope, Identity, MessageTarget, RpcClient, RpcClientError, SignalMessage, connect_tcp,
     },
     log_message::{LogMessage, Origin},
