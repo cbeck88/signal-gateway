@@ -4,7 +4,7 @@ use super::{
     route::{Destination, Limit, Route},
 };
 use crate::{
-    concurrent_map::ConcurrentMap,
+    concurrent_map::LazyMap,
     log_format::LogFormatConfig,
     log_message::{LogMessage, Origin},
 };
@@ -78,7 +78,7 @@ pub struct LogHandler {
     config: LogHandlerConfig,
     signal_alert_mq_tx: UnboundedSender<SignalAlertMessage>,
     /// Log buffers keyed by origin (app + host). Lazily created.
-    log_buffers: ConcurrentMap<Origin, LogBuffer>,
+    log_buffers: LazyMap<Origin, LogBuffer>,
     /// Routes with their associated limiter sets.
     routes: Vec<(Route, Mutex<LimiterSet>)>,
     /// Overall rate limiters applied after route checks pass.
@@ -103,10 +103,12 @@ impl LogHandler {
             .map(|limit| Mutex::new(limit.make_limiter()))
             .collect();
 
+        let buffer_size = config.log_buffer_size;
+
         Self {
             config,
             signal_alert_mq_tx,
-            log_buffers: ConcurrentMap::new(),
+            log_buffers: LazyMap::new(move || LogBuffer::new(buffer_size)),
             routes,
             overall_limits,
         }
@@ -168,40 +170,34 @@ impl LogHandler {
             info!("Suppressed {sev} ({reason}):\n{}", log_msg.msg);
         }
 
-        let buffer_size = self.config.log_buffer_size;
-
         // Get or create the buffer for this origin, then record the message
         let formatted_text = self
             .log_buffers
-            .get_or_insert_with(
-                origin.clone(),
-                || LogBuffer::new(buffer_size),
-                |buffer| {
-                    if rate_limit_result.is_err() {
-                        buffer.push_back(log_msg);
-                        None
-                    } else {
-                        // Guess at capacity, it will be faster to use too much memory than too little
-                        // signal-cli JVM is a hog anyways.
-                        let mut text = String::with_capacity(4096);
-                        let mut first_msg_len = 0;
-                        let mut is_first = true;
-                        let now = Utc::now();
+            .get(&origin, |buffer| {
+                if rate_limit_result.is_err() {
+                    buffer.push_back(log_msg);
+                    None
+                } else {
+                    // Guess at capacity, it will be faster to use too much memory than too little
+                    // signal-cli JVM is a hog anyways.
+                    let mut text = String::with_capacity(4096);
+                    let mut first_msg_len = 0;
+                    let mut is_first = true;
+                    let now = Utc::now();
 
-                        buffer.push_back_and_drain(log_msg, |log_msg| {
-                            self.config
-                                .log_format
-                                .write_log_msg(&mut text, log_msg, now);
-                            if is_first {
-                                first_msg_len = text.len();
-                                is_first = false;
-                            }
-                        });
+                    buffer.push_back_and_drain(log_msg, |log_msg| {
+                        self.config
+                            .log_format
+                            .write_log_msg(&mut text, log_msg, now);
+                        if is_first {
+                            first_msg_len = text.len();
+                            is_first = false;
+                        }
+                    });
 
-                        Some((text, first_msg_len))
-                    }
-                },
-            )
+                    Some((text, first_msg_len))
+                }
+            })
             .await;
 
         // Send alert if we have formatted text

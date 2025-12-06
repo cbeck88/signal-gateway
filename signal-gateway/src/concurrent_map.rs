@@ -4,7 +4,8 @@
 //! where values already exist, using a read lock first before falling back to a
 //! write lock for insertions.
 
-use std::{collections::HashMap, hash::Hash};
+use std::{borrow::Borrow, collections::HashMap, hash::Hash};
+
 use tokio::sync::RwLock;
 
 /// A concurrent hash map that uses read-preferring locking.
@@ -35,18 +36,23 @@ where
     /// 2. If found, calls `access` with a reference to the value
     /// 3. If not found, acquires a write lock, inserts using `create`, then calls `access`
     ///
+    /// The key is only cloned when a new value needs to be inserted.
+    ///
     /// The lock is held while `access` runs, so `access` can safely use the reference.
     /// For async operations on the value, consider having `access` return a future
     /// that owns any data it needs.
-    pub async fn get_or_insert_with<R, F, A>(&self, key: K, create: F, access: A) -> R
+    pub async fn get_or_insert_with<Q, R, F, A>(&self, key: Q, create: F, access: A) -> R
     where
+        Q: Borrow<K>,
         F: FnOnce() -> V,
         A: FnOnce(&V) -> R,
     {
+        let key = key.borrow();
+
         // Try to get existing value with read lock first
         {
             let guard = self.inner.read().await;
-            if let Some(value) = guard.get(&key) {
+            if let Some(value) = guard.get(key) {
                 return access(value);
             }
         }
@@ -54,7 +60,7 @@ where
         // Value doesn't exist, need to create with write lock
         let mut guard = self.inner.write().await;
         // Use entry API - handles the race where another task inserted while we waited
-        let value = guard.entry(key).or_insert_with(create);
+        let value = guard.entry(key.clone()).or_insert_with(create);
         access(value)
     }
 
@@ -77,6 +83,56 @@ where
 {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A concurrent hash map with a default factory for creating new values.
+///
+/// Wraps a [`ConcurrentMap`] and stores a factory closure, so callers don't need
+/// to pass the creation function on every access.
+pub struct LazyMap<K, V> {
+    inner: ConcurrentMap<K, V>,
+    factory: Box<dyn Fn() -> V + Send + Sync>,
+}
+
+impl<K, V> LazyMap<K, V>
+where
+    K: Eq + Hash + Clone,
+{
+    /// Create a new lazy map with the given factory for creating values.
+    pub fn new(factory: impl Fn() -> V + Send + Sync + 'static) -> Self {
+        Self {
+            inner: ConcurrentMap::new(),
+            factory: Box::new(factory),
+        }
+    }
+
+    /// Get a value, creating it with the factory if it doesn't exist.
+    ///
+    /// Uses the factory provided at construction time to create new values.
+    /// The key is only cloned when a new value needs to be inserted.
+    pub async fn get<Q, R, A>(&self, key: Q, access: A) -> R
+    where
+        Q: Borrow<K>,
+        A: FnOnce(&V) -> R,
+    {
+        self.inner
+            .get_or_insert_with(key, &self.factory, access)
+            .await
+    }
+
+    /// Access all entries in the map with a read lock.
+    pub async fn with_read_lock<R, A>(&self, access: A) -> R
+    where
+        A: FnOnce(&HashMap<K, V>) -> R,
+    {
+        self.inner.with_read_lock(access).await
+    }
+}
+
+impl<K, V> std::fmt::Debug for LazyMap<K, V> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LazyMap").finish_non_exhaustive()
     }
 }
 
