@@ -1,10 +1,10 @@
 //! Rate limiter set for managing per-route rate limiting.
 
 use crate::{
+    concurrent_map::LazyMap,
     log_message::{LogMessage, Origin},
     rate_limiter::Limiter,
 };
-use std::collections::HashMap;
 
 /// Result of evaluating a limiter set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,10 +19,8 @@ pub enum LimitResult {
 
 /// A set of limiters for a route, containing both per-origin and global limiters.
 pub struct LimiterSet {
-    /// Factory to create limiters for new origins.
-    make_limiters: Box<dyn Fn() -> Vec<Limiter> + Send + Sync>,
     /// Per-origin rate limiters, keyed by origin. Lazily created.
-    limiters: HashMap<Origin, Vec<Limiter>>,
+    limiters: LazyMap<Origin, Vec<Limiter>>,
     /// Global rate limiters (shared across all origins).
     global_limiters: Vec<Limiter>,
 }
@@ -34,8 +32,7 @@ impl LimiterSet {
         global_limiters: Vec<Limiter>,
     ) -> Self {
         Self {
-            make_limiters: Box::new(make_limiters),
-            limiters: HashMap::new(),
+            limiters: LazyMap::new(make_limiters),
             global_limiters,
         }
     }
@@ -45,20 +42,23 @@ impl LimiterSet {
     /// Returns [`LimitResult::Passed`] if the event passes all limits.
     /// Returns [`LimitResult::Limiter(i)`] if blocked by per-origin limiter at index `i`.
     /// Returns [`LimitResult::GlobalLimiter(i)`] if blocked by global limiter at index `i`.
-    pub fn evaluate(&mut self, log_msg: &LogMessage, origin: &Origin, ts_sec: i64) -> LimitResult {
-        // Get or create limiters for this origin
-        let origin_limiters = self
-            .limiters
-            .entry(origin.clone())
-            .or_insert_with(&self.make_limiters);
-
-        for (i, limiter) in origin_limiters.iter_mut().enumerate() {
-            if !limiter.evaluate(log_msg, ts_sec) {
-                return LimitResult::Limiter(i);
+    pub fn evaluate(&self, log_msg: &LogMessage, origin: &Origin, ts_sec: i64) -> LimitResult {
+        // Check per-origin limiters
+        let origin_result = self.limiters.get(origin, |origin_limiters| {
+            for (i, limiter) in origin_limiters.iter().enumerate() {
+                if !limiter.evaluate(log_msg, ts_sec) {
+                    return Some(LimitResult::Limiter(i));
+                }
             }
+            None
+        });
+
+        if let Some(result) = origin_result {
+            return result;
         }
 
-        for (i, limiter) in self.global_limiters.iter_mut().enumerate() {
+        // Check global limiters
+        for (i, limiter) in self.global_limiters.iter().enumerate() {
             if !limiter.evaluate(log_msg, ts_sec) {
                 return LimitResult::GlobalLimiter(i);
             }

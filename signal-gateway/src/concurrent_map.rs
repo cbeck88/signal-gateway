@@ -4,9 +4,7 @@
 //! where values already exist, using a read lock first before falling back to a
 //! write lock for insertions.
 
-use std::{borrow::Borrow, collections::HashMap, hash::Hash};
-
-use tokio::sync::RwLock;
+use std::{borrow::Borrow, collections::HashMap, hash::Hash, sync::RwLock};
 
 /// A concurrent hash map that uses read-preferring locking.
 ///
@@ -38,10 +36,8 @@ where
     ///
     /// The key is only cloned when a new value needs to be inserted.
     ///
-    /// The lock is held while `access` runs, so `access` can safely use the reference.
-    /// For async operations on the value, consider having `access` return a future
-    /// that owns any data it needs.
-    pub async fn get_or_insert_with<Q, R, F, A>(&self, key: Q, create: F, access: A) -> R
+    /// The lock is held while `access` runs.
+    pub fn get_or_insert_with<Q, R, F, A>(&self, key: Q, create: F, access: A) -> R
     where
         Q: Borrow<K>,
         F: FnOnce() -> V,
@@ -51,14 +47,14 @@ where
 
         // Try to get existing value with read lock first
         {
-            let guard = self.inner.read().await;
+            let guard = self.inner.read().unwrap();
             if let Some(value) = guard.get(key) {
                 return access(value);
             }
         }
 
         // Value doesn't exist, need to create with write lock
-        let mut guard = self.inner.write().await;
+        let mut guard = self.inner.write().unwrap();
         // Use entry API - handles the race where another task inserted while we waited
         let value = guard.entry(key.clone()).or_insert_with(create);
         access(value)
@@ -68,12 +64,28 @@ where
     ///
     /// Acquires a read lock and calls `access` with a reference to the underlying HashMap.
     /// The lock is held while `access` runs.
-    pub async fn with_read_lock<R, A>(&self, access: A) -> R
+    pub fn with_read_lock<R, A>(&self, access: A) -> R
     where
         A: FnOnce(&HashMap<K, V>) -> R,
     {
-        let guard = self.inner.read().await;
+        let guard = self.inner.read().unwrap();
         access(&guard)
+    }
+
+    /// Retain only entries that satisfy the predicate.
+    ///
+    /// Acquires a write lock and calls `retain` on the underlying HashMap.
+    pub fn retain<F>(&self, f: F)
+    where
+        F: FnMut(&K, &mut V) -> bool,
+    {
+        let mut guard = self.inner.write().unwrap();
+        guard.retain(f);
+    }
+
+    /// Returns the number of entries in the map.
+    pub fn len(&self) -> usize {
+        self.inner.read().unwrap().len()
     }
 }
 
@@ -111,22 +123,33 @@ where
     ///
     /// Uses the factory provided at construction time to create new values.
     /// The key is only cloned when a new value needs to be inserted.
-    pub async fn get<Q, R, A>(&self, key: Q, access: A) -> R
+    pub fn get<Q, R, A>(&self, key: Q, access: A) -> R
     where
         Q: Borrow<K>,
         A: FnOnce(&V) -> R,
     {
-        self.inner
-            .get_or_insert_with(key, &self.factory, access)
-            .await
+        self.inner.get_or_insert_with(key, &self.factory, access)
     }
 
     /// Access all entries in the map with a read lock.
-    pub async fn with_read_lock<R, A>(&self, access: A) -> R
+    pub fn with_read_lock<R, A>(&self, access: A) -> R
     where
         A: FnOnce(&HashMap<K, V>) -> R,
     {
-        self.inner.with_read_lock(access).await
+        self.inner.with_read_lock(access)
+    }
+
+    /// Retain only entries that satisfy the predicate.
+    pub fn retain<F>(&self, f: F)
+    where
+        F: FnMut(&K, &mut V) -> bool,
+    {
+        self.inner.retain(f);
+    }
+
+    /// Returns the number of entries in the map.
+    pub fn len(&self) -> usize {
+        self.inner.len()
     }
 }
 
@@ -140,53 +163,48 @@ impl<K, V> std::fmt::Debug for LazyMap<K, V> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_get_or_insert_new_key() {
+    #[test]
+    fn test_get_or_insert_new_key() {
         let map: ConcurrentMap<String, i32> = ConcurrentMap::new();
 
-        let result = map
-            .get_or_insert_with("key1".to_string(), || 42, |v| *v)
-            .await;
+        let result = map.get_or_insert_with("key1".to_string(), || 42, |v| *v);
 
         assert_eq!(result, 42);
     }
 
-    #[tokio::test]
-    async fn test_get_or_insert_existing_key() {
+    #[test]
+    fn test_get_or_insert_existing_key() {
         let map: ConcurrentMap<String, i32> = ConcurrentMap::new();
 
         // Insert first time
-        map.get_or_insert_with("key1".to_string(), || 42, |_| ())
-            .await;
+        map.get_or_insert_with("key1".to_string(), || 42, |_| ());
 
         // Access again - should get existing value, not call create
         let mut create_called = false;
-        let result = map
-            .get_or_insert_with(
-                "key1".to_string(),
-                || {
-                    create_called = true;
-                    100
-                },
-                |v| *v,
-            )
-            .await;
+        let result = map.get_or_insert_with(
+            "key1".to_string(),
+            || {
+                create_called = true;
+                100
+            },
+            |v| *v,
+        );
 
         assert_eq!(result, 42);
         assert!(!create_called);
     }
 
-    #[tokio::test]
-    async fn test_get_or_insert_multiple_keys() {
+    #[test]
+    fn test_get_or_insert_multiple_keys() {
         let map: ConcurrentMap<String, i32> = ConcurrentMap::new();
 
-        map.get_or_insert_with("a".to_string(), || 1, |_| ()).await;
-        map.get_or_insert_with("b".to_string(), || 2, |_| ()).await;
-        map.get_or_insert_with("c".to_string(), || 3, |_| ()).await;
+        map.get_or_insert_with("a".to_string(), || 1, |_| ());
+        map.get_or_insert_with("b".to_string(), || 2, |_| ());
+        map.get_or_insert_with("c".to_string(), || 3, |_| ());
 
-        let a = map.get_or_insert_with("a".to_string(), || 0, |v| *v).await;
-        let b = map.get_or_insert_with("b".to_string(), || 0, |v| *v).await;
-        let c = map.get_or_insert_with("c".to_string(), || 0, |v| *v).await;
+        let a = map.get_or_insert_with("a".to_string(), || 0, |v| *v);
+        let b = map.get_or_insert_with("b".to_string(), || 0, |v| *v);
+        let c = map.get_or_insert_with("c".to_string(), || 0, |v| *v);
 
         assert_eq!(a, 1);
         assert_eq!(b, 2);

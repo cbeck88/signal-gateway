@@ -11,7 +11,7 @@ use crate::{
 use chrono::Utc;
 use conf::Conf;
 use std::fmt;
-use tokio::sync::{Mutex, mpsc::UnboundedSender};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::{error, info};
 
 /// Reason why an alert was suppressed by rate limiting.
@@ -79,9 +79,9 @@ pub struct LogHandler {
     /// Log buffers keyed by origin (app + host). Lazily created.
     log_buffers: LazyMap<Origin, LogBuffer>,
     /// Routes with their associated limiter sets.
-    routes: Vec<(Route, Mutex<LimiterSet>)>,
+    routes: Vec<(Route, LimiterSet)>,
     /// Overall rate limiters applied after route checks pass.
-    overall_limits: Vec<Mutex<Limiter>>,
+    overall_limits: Vec<Limiter>,
 }
 
 impl LogHandler {
@@ -93,13 +93,13 @@ impl LogHandler {
         let routes = config
             .routes
             .iter()
-            .map(|route| (route.clone(), Mutex::new(route.make_limiter_set())))
+            .map(|route| (route.clone(), route.make_limiter_set()))
             .collect();
 
         let overall_limits = config
             .overall_limits
             .iter()
-            .map(|limit| Mutex::new(limit.make_limiter()))
+            .map(|limit| limit.make_limiter())
             .collect();
 
         let buffer_size = config.log_buffer_size;
@@ -153,7 +153,6 @@ impl LogHandler {
                     text
                 }
             })
-            .await
     }
 
     /// Consume a new log message from the given origin
@@ -196,8 +195,7 @@ impl LogHandler {
 
                     Some((text, first_msg_len))
                 }
-            })
-            .await;
+            });
 
         // Send alert if we have formatted text
         if let Some((text, first_msg_len)) = formatted_text {
@@ -246,7 +244,7 @@ impl LogHandler {
             }
 
             // Filter matched, evaluate the limiter set
-            let result = limiter_set.lock().await.evaluate(log_msg, origin, ts_sec);
+            let result = limiter_set.evaluate(log_msg, origin, ts_sec);
 
             match result {
                 LimitResult::Passed => {
@@ -271,7 +269,7 @@ impl LogHandler {
 
         // At least one route passed, now check overall limits
         for (idx, limiter) in self.overall_limits.iter().enumerate() {
-            if !limiter.lock().await.evaluate(log_msg, ts_sec) {
+            if !limiter.evaluate(log_msg, ts_sec) {
                 return Err(SuppressionReason::Overall(idx, LimitResult::Limiter(0)));
             }
         }

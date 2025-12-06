@@ -1,11 +1,13 @@
 //! Rate limiting for log alerts.
 
-use crate::log_message::LogMessage;
+use crate::{concurrent_map::LazyMap, log_message::LogMessage};
 use serde::Deserialize;
 use std::{
-    collections::HashMap,
     str::FromStr,
-    sync::atomic::{AtomicI64, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicI64, Ordering},
+    },
     time::Duration,
 };
 
@@ -105,7 +107,7 @@ impl Limiter {
     ///
     /// Returns `true` if the event should be allowed (not rate-limited),
     /// `false` if it should be suppressed.
-    pub fn evaluate(&mut self, log_msg: &LogMessage, ts_sec: i64) -> bool {
+    pub fn evaluate(&self, log_msg: &LogMessage, ts_sec: i64) -> bool {
         match self {
             Limiter::Multi(limiter) => limiter.evaluate(ts_sec),
             Limiter::SourceLocation(limiter) => {
@@ -154,20 +156,9 @@ impl SimpleRateLimiter {
         let last_ts = self.last_timestamp.load(Ordering::SeqCst);
         let rate_limited = ts_sec - last_ts < self.window;
         if !rate_limited && ts_sec > last_ts {
-            // If this is called concurrently, guarantee that we keep going
-            // until the max value is stored at self.last_timestamp,
-            // so self.last_timestamp is "eventually" only monotonically increasing.
-            store_max(ts_sec, &self.last_timestamp);
+            self.last_timestamp.fetch_max(ts_sec, Ordering::SeqCst);
         }
         !rate_limited
-    }
-}
-
-#[allow(dead_code)]
-fn store_max(val: i64, at: &AtomicI64) {
-    let prev = at.swap(val, Ordering::SeqCst);
-    if prev > val {
-        store_max(prev, at)
     }
 }
 
@@ -178,8 +169,8 @@ fn store_max(val: i64, at: &AtomicI64) {
 /// gets its own `MultiRateLimiter` with the full threshold.
 pub struct SourceLocationRateLimiter {
     /// Maps (file, line) -> rate limiter for that location
-    limiters: HashMap<(String, String), MultiRateLimiter>,
-    /// Threshold for creating new limiters
+    limiters: LazyMap<(String, String), MultiRateLimiter>,
+    /// Threshold for creating new limiters (used for cleanup window calculation)
     threshold: RateThreshold,
     /// Maximum entries before triggering cleanup
     max_entries: usize,
@@ -188,7 +179,7 @@ pub struct SourceLocationRateLimiter {
 impl SourceLocationRateLimiter {
     pub fn new(threshold: RateThreshold, max_entries: usize) -> Self {
         Self {
-            limiters: HashMap::new(),
+            limiters: LazyMap::new(move || MultiRateLimiter::from(threshold)),
             threshold,
             max_entries,
         }
@@ -197,15 +188,10 @@ impl SourceLocationRateLimiter {
     /// Check if an error from this source location should trigger an alert.
     ///
     /// Returns true if the alert should fire (not rate-limited), false if suppressed.
-    pub fn evaluate(&mut self, file: &str, line: &str, ts_sec: i64) -> bool {
+    pub fn evaluate(&self, file: &str, line: &str, ts_sec: i64) -> bool {
         let key = (file.to_owned(), line.to_owned());
 
-        let limiter = self
-            .limiters
-            .entry(key)
-            .or_insert_with(|| MultiRateLimiter::from(self.threshold));
-
-        let result = limiter.evaluate(ts_sec);
+        let result = self.limiters.get(&key, |limiter| limiter.evaluate(ts_sec));
 
         // Clean up if we've exceeded max entries
         if self.limiters.len() > self.max_entries {
@@ -216,7 +202,7 @@ impl SourceLocationRateLimiter {
     }
 
     /// Remove entries where all timestamps are older than the window
-    fn cleanup(&mut self, now: i64) {
+    fn cleanup(&self, now: i64) {
         let window = self.threshold.duration.as_secs() as i64;
         let cutoff = now - window;
         self.limiters.retain(|_, limiter| {
@@ -230,35 +216,35 @@ impl SourceLocationRateLimiter {
 ///
 /// Uses a ring buffer to track the N most recent timestamps.
 pub struct MultiRateLimiter {
-    inner: MultiRateLimiterInner,
+    inner: Mutex<MultiRateLimiterInner>,
     /// The length of the window (in seconds)
     window: i64,
     /// If true, returns true when rate >= threshold (burst detection).
     /// If false, returns true when rate < threshold (suppression).
     comparator_is_ge: bool,
     /// Cache of latest timestamp recorded
-    latest: i64,
+    latest: AtomicI64,
 }
 
 impl MultiRateLimiter {
     pub fn new(num: usize, window: Duration, comparator_is_ge: bool) -> Self {
         Self {
-            inner: MultiRateLimiterInner::new(num),
+            inner: Mutex::new(MultiRateLimiterInner::new(num)),
             window: window.as_secs().try_into().unwrap(),
             comparator_is_ge,
-            latest: 0,
+            latest: AtomicI64::new(0),
         }
     }
 
     /// Get the latest timestamp recorded
     pub fn get_latest(&self) -> i64 {
-        self.latest
+        self.latest.load(Ordering::SeqCst)
     }
 
     /// Check if a particular new timestamp passes the limit. This also updates the internal state.
-    pub fn evaluate(&mut self, new_timestamp: i64) -> bool {
-        let (earliest, latest) = self.inner.insert_and_pop(new_timestamp);
-        self.latest = self.latest.max(latest);
+    pub fn evaluate(&self, new_timestamp: i64) -> bool {
+        let (earliest, latest) = self.inner.lock().unwrap().insert_and_pop(new_timestamp);
+        self.latest.fetch_max(latest, Ordering::SeqCst);
 
         let threshold_met = earliest + self.window >= latest;
 
@@ -454,7 +440,7 @@ mod tests {
             duration: Duration::from_secs(600),
             comparator_is_ge: true,
         };
-        let mut limiter = SourceLocationRateLimiter::new(threshold, 100);
+        let limiter = SourceLocationRateLimiter::new(threshold, 100);
 
         // First alert from location A: no previous event to compare, returns false
         assert!(!limiter.evaluate("file_a.rs", "10", 1000));
@@ -482,7 +468,7 @@ mod tests {
             duration: Duration::from_secs(600),
             comparator_is_ge: true,
         };
-        let mut limiter = SourceLocationRateLimiter::new(threshold, 100);
+        let limiter = SourceLocationRateLimiter::new(threshold, 100);
 
         // First three alerts: buffer filling, evicted=0, returns false
         assert!(!limiter.evaluate("file.rs", "10", 1000));
@@ -511,7 +497,7 @@ mod tests {
             duration: Duration::from_secs(600),
             comparator_is_ge: true,
         };
-        let mut limiter = SourceLocationRateLimiter::new(threshold, 100);
+        let limiter = SourceLocationRateLimiter::new(threshold, 100);
 
         // First two events at each location: buffer filling, evicted=0
         assert!(!limiter.evaluate("file.rs", "10", 1000));
@@ -538,7 +524,7 @@ mod tests {
             duration: Duration::from_secs(600),
             comparator_is_ge: false,
         };
-        let mut limiter = SourceLocationRateLimiter::new(threshold, 100);
+        let limiter = SourceLocationRateLimiter::new(threshold, 100);
 
         // First three alerts: evicted=0, threshold_met=false, returns true
         assert!(limiter.evaluate("file.rs", "10", 1000));
@@ -725,7 +711,7 @@ mod tests {
             duration: Duration::from_secs(600),
             comparator_is_ge: true,
         };
-        let mut limiter = SourceLocationRateLimiter::new(threshold, 3);
+        let limiter = SourceLocationRateLimiter::new(threshold, 3);
 
         // Fill up the limiter (first events return false with evicted-vs-latest)
         assert!(!limiter.evaluate("file1.rs", "1", 1000));
