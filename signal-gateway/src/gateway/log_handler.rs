@@ -117,7 +117,7 @@ impl LogHandler {
                     return "No log sources registered yet".to_string();
                 }
 
-                let mut text = String::new();
+                let mut text = String::with_capacity(4096);
                 let now = Utc::now().timestamp();
 
                 for (origin, buffer) in buffers.iter() {
@@ -130,6 +130,8 @@ impl LogHandler {
                     writeln!(&mut text, "=== [{origin}] ===").unwrap();
                     buffer.with_iter(|iter| {
                         writeln!(&mut text, "{} log messages (newest first):", iter.len()).unwrap();
+                        // Guess at how much to reserve
+                        text.reserve(iter.len() * 128);
                         for log_msg in iter {
                             self.config.log_format.write_log_msg(&mut text, log_msg, now);
                         }
@@ -172,7 +174,9 @@ impl LogHandler {
                         buffer.push_back(log_msg);
                         None
                     } else {
-                        let mut text = String::default();
+                        // Guess at capacity, it will be faster to use too much memory than too little
+                        // signal-cli JVM is a hog anyways.
+                        let mut text = String::with_capacity(4096);
                         let now = Utc::now().timestamp();
 
                         buffer.push_back_and_drain(log_msg, |log_msg| {
