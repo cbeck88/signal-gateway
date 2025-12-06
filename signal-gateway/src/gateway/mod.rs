@@ -20,20 +20,16 @@ use http::{Method, Request, Response, StatusCode};
 use http_body::Body;
 use http_body_util::BodyExt;
 use prometheus_http_client::{AlertStatus, ExtractLabels};
-use std::{
-    collections::HashMap,
-    fmt::Write,
-    net::SocketAddr,
-    path::PathBuf,
-    sync::Mutex,
-    time::Duration,
-};
+use std::{fmt::Write, net::SocketAddr, path::PathBuf, sync::Mutex, time::Duration};
 use tokio::{
     join,
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
 };
 use tokio_util::{bytes::Buf, sync::CancellationToken};
 use tracing::{debug, error, info, warn};
+
+mod admin_uuids;
+pub use admin_uuids::AdminSignalUuids;
 
 mod log_buffer;
 mod log_handler;
@@ -67,9 +63,9 @@ pub struct GatewayConfig {
     #[conf(long, env, default_value = "5s", value_parser = conf_extra::parse_duration, serde(use_value_parser))]
     pub signal_cli_retry_delay: Duration,
     /// Admin UUIDs mapped to their safety numbers (can be empty).
-    /// Example: `{"uuid1": ["12345...", "67890..."], "uuid2": []}`
+    /// Accepts either a map `{"uuid1": ["12345..."], "uuid2": []}` or a list `["uuid1", "uuid2"]`.
     #[conf(long, env, value_parser = serde_json::from_str)]
-    pub admin_signal_uuids: HashMap<String, Vec<String>>,
+    pub admin_signal_uuids: AdminSignalUuids,
     /// If set, alerts are sent to this group instead of individual admins.
     #[conf(long, env)]
     pub alert_group_id: Option<String>,
@@ -84,12 +80,12 @@ pub struct GatewayConfig {
 impl GatewayConfig {
     /// Check if a UUID is a registered admin
     pub fn is_admin(&self, uuid: &str) -> bool {
-        self.admin_signal_uuids.contains_key(uuid)
+        self.admin_signal_uuids.contains(uuid)
     }
 
     /// Get all admin UUIDs
     pub fn admin_uuids(&self) -> Vec<String> {
-        self.admin_signal_uuids.keys().cloned().collect()
+        self.admin_signal_uuids.uuids().cloned().collect()
     }
 }
 
