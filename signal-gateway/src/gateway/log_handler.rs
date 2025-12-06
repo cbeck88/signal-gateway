@@ -3,10 +3,10 @@ use super::route::{Destination, Limit, Route};
 use super::{AdminMessage, LimitResult, Limiter, LimiterSet};
 use crate::{
     concurrent_map::ConcurrentMap,
-    human_duration::HumanTMinus,
+    log_format::LogFormatConfig,
     log_message::{LogMessage, Origin},
 };
-use chrono::{TimeDelta, Utc};
+use chrono::Utc;
 use conf::Conf;
 use std::fmt;
 use tokio::sync::{Mutex, mpsc::UnboundedSender};
@@ -54,13 +54,12 @@ pub struct LogHandlerConfig {
     /// Overall rate limits applied after route checks pass.
     #[conf(long, env, value_parser = serde_json::from_str, default_value = "[]")]
     pub overall_limits: Vec<Limit>,
-    #[conf(long, env)]
-    pub format_module: bool,
-    #[conf(long, env)]
-    pub format_source_location: bool,
     /// Number of recent log messages to buffer per origin
     #[conf(long, env, default_value = "64")]
     pub log_buffer_size: usize,
+    /// Log message formatting options.
+    #[conf(flatten)]
+    pub log_format: LogFormatConfig,
 }
 
 /// The log handler takes log messages and decides what to do with them.
@@ -132,7 +131,7 @@ impl LogHandler {
                     buffer.with_iter(|iter| {
                         writeln!(&mut text, "{} log messages (newest first):", iter.len()).unwrap();
                         for log_msg in iter {
-                            self.write_log_msg(&mut text, log_msg, now);
+                            self.config.log_format.write_log_msg(&mut text, log_msg, now);
                         }
                     });
                     text.push('\n');
@@ -177,7 +176,7 @@ impl LogHandler {
                         let now = Utc::now().timestamp();
 
                         buffer.push_back_and_drain(log_msg, |log_msg| {
-                            self.write_log_msg(&mut text, log_msg, now);
+                            self.config.log_format.write_log_msg(&mut text, log_msg, now);
                         });
 
                         Some(text)
@@ -198,65 +197,6 @@ impl LogHandler {
             }) {
                 error!("Could not send alert message, queue is closed");
             }
-        }
-    }
-
-    // Format a log message into a Writer, followed by \n, and using any config options to do so
-    fn write_log_msg(&self, mut writer: impl std::fmt::Write, log_msg: &LogMessage, now: i64) {
-        let sev = log_msg.level.to_str();
-        let msg = &log_msg.msg;
-
-        // Format relative timestamp if available
-        let time_str = if let Some(ts) = log_msg.timestamp {
-            let diff_secs = now.saturating_sub(ts);
-            HumanTMinus(TimeDelta::seconds(diff_secs)).to_string()
-        } else {
-            "T-?".to_owned()
-        };
-
-        // Extract metadata from structured data if configured
-        let mut metadata_parts = Vec::new();
-
-        if self.config.format_module
-            && let Some(module) = log_msg.module_path.as_ref()
-        {
-            metadata_parts.push(module.to_string());
-        }
-
-        if self.config.format_source_location {
-            let file_opt = log_msg.file.as_ref();
-            let line_opt = log_msg.line.as_ref();
-
-            let location = if let Some(file) = file_opt {
-                // Strip /home/{username}/ prefix if present
-                let trimmed_file = strip_prefix_and_one_slash(file, "/home/");
-                // Strip .cargo/registry/src/{hash}/ if present
-                let trimmed_file = strip_prefix_and_one_slash(trimmed_file, ".cargo/registry/src/");
-
-                if let Some(line) = line_opt {
-                    format!("{trimmed_file}:{line}")
-                } else {
-                    format!("{trimmed_file}:?")
-                }
-            } else {
-                // No file present, use "?" even if line is present
-                "?".to_owned()
-            };
-
-            metadata_parts.push(location);
-        }
-
-        // Format: "ERROR     T-10s [foo bar.rs:42]: message"
-        // Pad severity to 5 chars (left-aligned), time to 8 chars (right-aligned)
-        let result = if metadata_parts.is_empty() {
-            writeln!(writer, "{:<5} {:>8}: {}", sev, time_str, msg)
-        } else {
-            let metadata = metadata_parts.join(" ");
-            writeln!(writer, "{:<5} {:>8} [{}]: {}", sev, time_str, metadata, msg)
-        };
-
-        if let Err(err) = result {
-            error!("Couldn't write log message ({err}): {sev}: {msg}");
         }
     }
 
@@ -324,18 +264,5 @@ impl LogHandler {
 
         // All checks passed
         Ok(first_destination)
-    }
-}
-
-// Strip a prefix, then find the first remaining slash and skip up to that as well.
-fn strip_prefix_and_one_slash<'a>(target: &'a str, prefix: &str) -> &'a str {
-    let Some(target) = target.strip_prefix(prefix) else {
-        return target;
-    };
-
-    if let Some((_, after)) = target.split_once('/') {
-        after
-    } else {
-        target
     }
 }
