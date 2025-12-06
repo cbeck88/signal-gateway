@@ -37,10 +37,13 @@ mod log_buffer;
 mod log_handler;
 use log_handler::{LogHandler, LogHandlerConfig};
 
+mod rate_limiter_set;
+pub use rate_limiter_set::{LimitResult, LimiterSet};
+
 mod route;
 pub use route::{Destination, Limit, Route};
 
-pub use crate::rate_limiter::{LimitResult, Limiter, LimiterSet, RateThreshold};
+pub use crate::rate_limiter::{Limiter, RateThreshold};
 
 /// Configuration for the gateway.
 #[derive(Conf, Debug)]

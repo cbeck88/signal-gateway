@@ -3,8 +3,9 @@
 //! Routes define how log messages are processed based on filters, severity levels,
 //! and destination overrides.
 
+use super::rate_limiter_set::LimiterSet;
 use crate::log_message::{Level, LogFilter};
-use crate::rate_limiter::{Limiter, LimiterSet, RateThreshold};
+use crate::rate_limiter::{Limiter, RateThreshold};
 use serde::Deserialize;
 
 /// A rate limit rule for suppressing repeated alerts.
