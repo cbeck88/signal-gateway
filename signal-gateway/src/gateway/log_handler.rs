@@ -1,4 +1,4 @@
-use super::circular_buffer::CircularBuffer;
+use super::log_buffer::LogBuffer;
 use super::route::{Destination, Limit, Route};
 use super::{AdminMessage, LimitResult, Limiter, LimiterSet};
 use crate::{
@@ -77,7 +77,7 @@ pub struct LogHandler {
     config: LogHandlerConfig,
     admin_mq_tx: UnboundedSender<AdminMessage>,
     /// Log buffers keyed by origin (app + host). Lazily created.
-    log_buffers: ConcurrentMap<Origin, Mutex<CircularBuffer<LogMessage>>>,
+    log_buffers: ConcurrentMap<Origin, LogBuffer>,
     /// Routes with their associated limiter sets.
     routes: Vec<(Route, Mutex<LimiterSet>)>,
     /// Overall rate limiters applied after route checks pass.
@@ -121,7 +121,7 @@ impl LogHandler {
                 let mut text = String::new();
                 let now = Utc::now().timestamp();
 
-                for (origin, buffer_mutex) in buffers.iter() {
+                for (origin, buffer) in buffers.iter() {
                     // Apply filter if present
                     if let Some(f) = filter {
                         if !origin.matches_filter(f) {
@@ -129,21 +129,13 @@ impl LogHandler {
                         }
                     }
 
-                    // We can't await inside read_all, so use try_lock
-                    // If the buffer is locked, skip it (rare case)
-                    let Some(buffer) = buffer_mutex.try_lock().ok() else {
-                        continue;
-                    };
-
                     use std::fmt::Write;
                     writeln!(&mut text, "=== [{origin}] ===").unwrap();
                     writeln!(&mut text, "{} log messages (newest first):", buffer.len()).unwrap();
 
-                    // Collect and reverse to show newest first
-                    let messages: Vec<_> = buffer.iter().collect();
-                    for log_msg in messages.into_iter().rev() {
+                    buffer.for_each(|log_msg| {
                         self.write_log_msg(&mut text, log_msg, now);
-                    }
+                    });
                     text.push('\n');
                 }
 
@@ -176,26 +168,21 @@ impl LogHandler {
             .log_buffers
             .get_or_insert_with(
                 origin.clone(),
-                || Mutex::new(CircularBuffer::new(buffer_size)),
-                |buffer_mutex| {
-                    // Lock the buffer and process the message
-                    let mut buffer = buffer_mutex.blocking_lock();
-                    buffer.push_back(log_msg);
-
+                || LogBuffer::new(buffer_size),
+                |buffer| {
                     if rate_limit_result.is_err() {
-                        return None;
+                        buffer.push_back(log_msg);
+                        None
+                    } else {
+                        let mut text = String::default();
+                        let now = Utc::now().timestamp();
+
+                        buffer.push_back_and_drain(log_msg, |log_msg| {
+                            self.write_log_msg(&mut text, log_msg, now);
+                        });
+
+                        Some(text)
                     }
-
-                    let mut text = String::default();
-                    let now = Utc::now().timestamp();
-
-                    // Iterate in reverse (newest first) without copying
-                    for log_msg in buffer.iter().rev() {
-                        self.write_log_msg(&mut text, log_msg, now);
-                    }
-                    buffer.clear();
-
-                    Some(text)
                 },
             )
             .await;
@@ -300,10 +287,7 @@ impl LogHandler {
             }
 
             // Check if message matches route's filter (if any)
-            let filter_matches = route
-                .filter
-                .as_ref()
-                .map_or(true, |f| f.matches(log_msg));
+            let filter_matches = route.filter.as_ref().map_or(true, |f| f.matches(log_msg));
 
             if !filter_matches {
                 continue;

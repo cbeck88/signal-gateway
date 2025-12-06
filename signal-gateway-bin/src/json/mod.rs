@@ -164,7 +164,11 @@ pub struct JsonLogMessage {
     pub message: String,
 
     /// Log level - accepts various formats (error, ERROR, err, etc.)
-    #[serde(default, alias = "severity", deserialize_with = "deserialize_opt_level")]
+    #[serde(
+        default,
+        alias = "severity",
+        deserialize_with = "deserialize_opt_level"
+    )]
     pub level: Option<Level>,
 
     /// Timestamp - accepts Unix epoch seconds (int or string) or RFC3339 string

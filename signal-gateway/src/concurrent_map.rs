@@ -129,15 +129,9 @@ mod tests {
         map.get_or_insert_with("b".to_string(), || 2, |_| ()).await;
         map.get_or_insert_with("c".to_string(), || 3, |_| ()).await;
 
-        let a = map
-            .get_or_insert_with("a".to_string(), || 0, |v| *v)
-            .await;
-        let b = map
-            .get_or_insert_with("b".to_string(), || 0, |v| *v)
-            .await;
-        let c = map
-            .get_or_insert_with("c".to_string(), || 0, |v| *v)
-            .await;
+        let a = map.get_or_insert_with("a".to_string(), || 0, |v| *v).await;
+        let b = map.get_or_insert_with("b".to_string(), || 0, |v| *v).await;
+        let c = map.get_or_insert_with("c".to_string(), || 0, |v| *v).await;
 
         assert_eq!(a, 1);
         assert_eq!(b, 2);

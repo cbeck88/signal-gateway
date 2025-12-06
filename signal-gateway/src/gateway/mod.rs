@@ -34,6 +34,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 mod circular_buffer;
+mod log_buffer;
 mod log_handler;
 use log_handler::{LogHandler, LogHandlerConfig};
 
@@ -563,10 +564,7 @@ impl Gateway {
     async fn handle_gateway_command(&self, cmd: GatewayCommand) -> MessageHandlerResult {
         match cmd {
             GatewayCommand::Log { filter } => {
-                let text = self
-                    .log_handler
-                    .format_logs(filter.as_deref())
-                    .await;
+                let text = self.log_handler.format_logs(filter.as_deref()).await;
                 Ok(AdminMessageResponse::new(text))
             }
             GatewayCommand::Query { query } => {
