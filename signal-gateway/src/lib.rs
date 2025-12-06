@@ -9,6 +9,7 @@ pub mod alertmanager;
 pub mod gateway;
 pub mod message_handler;
 
+pub(crate) mod concurrent_map;
 pub(crate) mod human_duration;
 pub(crate) mod jsonrpc;
 pub(crate) mod log_message;

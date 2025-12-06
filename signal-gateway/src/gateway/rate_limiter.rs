@@ -1,72 +1,113 @@
-use serde::Deserialize;
+use super::route::{Limit, RateThreshold};
+use crate::log_message::{LogMessage, Origin};
 use std::{
     collections::HashMap,
-    str::FromStr,
     sync::atomic::{AtomicI64, Ordering},
     time::Duration,
 };
 
-/// Represents a rate threshold, expressed as a string in the format:
-///
-/// * `1 / 10s`
-/// * `2 / 5m`
-/// * `3 / 1h`
-/// * `> 1 / 10s`
-/// * `>= 2 / 10s`
-///
-/// When the comparator is omitted, it is treated as `>=`
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(try_from = "String")]
-pub struct RateThreshold {
-    pub times: usize,
-    pub duration: Duration,
+/// Maximum entries in a source-location rate limiter before triggering cleanup.
+const SOURCE_LOCATION_MAX_ENTRIES: usize = 2000;
+
+/// A rate limiter that can be either a multi-rate limiter or a source-location limiter.
+#[derive(Debug)]
+pub enum Limiter {
+    /// Counts events regardless of source location.
+    Multi(MultiRateLimiter),
+    /// Tracks events independently per source location (file:line).
+    SourceLocation(SourceLocationRateLimiter),
 }
 
-impl FromStr for RateThreshold {
-    type Err = String;
+/// Result of evaluating a limiter set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LimitResult {
+    /// The event passed all limits (not rate-limited).
+    Passed,
+    /// The event was blocked by a per-origin limiter at the given index.
+    Limiter(usize),
+    /// The event was blocked by a global limiter at the given index.
+    GlobalLimiter(usize),
+}
 
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let Some((first, second)) = s.trim().split_once('/') else {
-            return Err("missing '/' character in rate threshold".into());
-        };
+/// A set of limiters for a route, containing both per-origin and global limiters.
+#[derive(Debug)]
+pub struct LimiterSet {
+    /// Limit configurations (used to create limiters for new origins).
+    limits: Vec<Limit>,
+    /// Per-origin rate limiters, keyed by origin. Lazily created.
+    limiters: HashMap<Origin, Vec<Limiter>>,
+    /// Global rate limiters (shared across all origins).
+    global_limiters: Vec<Limiter>,
+}
 
-        let duration = conf_extra::parse_duration(second.trim())?;
+impl LimiterSet {
+    /// Create a new limiter set from limit configurations.
+    pub fn new(limits: Vec<Limit>, global_limits: Vec<Limit>) -> Self {
+        Self {
+            limits,
+            limiters: HashMap::new(),
+            global_limiters: global_limits.iter().map(|l| l.make_limiter()).collect(),
+        }
+    }
 
-        let first = first.trim();
-        let maybe_mid = first.as_bytes().iter().position(|b| b.is_ascii_digit());
-        let (comparator, num) = if let Some(mid) = maybe_mid {
-            first.split_at(mid)
-        } else {
-            ("", first)
-        };
+    /// Evaluate whether an event should pass all rate limits.
+    ///
+    /// Returns [`LimitResult::Passed`] if the event passes all limits.
+    /// Returns [`LimitResult::Limiter(i)`] if blocked by per-origin limiter at index `i`.
+    /// Returns [`LimitResult::GlobalLimiter(i)`] if blocked by global limiter at index `i`.
+    pub fn evaluate(&mut self, log_msg: &LogMessage, origin: &Origin, ts_sec: i64) -> LimitResult {
+        // Get or create limiters for this origin
+        let origin_limiters = self
+            .limiters
+            .entry(origin.clone())
+            .or_insert_with(|| self.limits.iter().map(|l| l.make_limiter()).collect());
 
-        let is_greater_equal = match comparator.trim() {
-            ">" => false,
-            ">=" | "=>" | "" => true,
-            _ => return Err(format!("Unexpected comparator format: {comparator}")),
-        };
-
-        let num = num.trim();
-        let mut times: usize = num
-            .parse()
-            .map_err(|err| format!("invalid number {num}: {err}"))?;
-
-        if !is_greater_equal {
-            times += 1;
+        for (i, limiter) in origin_limiters.iter_mut().enumerate() {
+            if !limiter.evaluate(log_msg, ts_sec) {
+                return LimitResult::Limiter(i);
+            }
         }
 
-        if times == 0 {
-            return Err("Invalid threshold, times must be > 0".into());
+        for (i, limiter) in self.global_limiters.iter_mut().enumerate() {
+            if !limiter.evaluate(log_msg, ts_sec) {
+                return LimitResult::GlobalLimiter(i);
+            }
         }
 
-        Ok(RateThreshold { times, duration })
+        LimitResult::Passed
     }
 }
 
-impl TryFrom<String> for RateThreshold {
-    type Error = <RateThreshold as FromStr>::Err;
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        RateThreshold::from_str(&s)
+impl Limiter {
+    /// Evaluate whether an event should pass the rate limit.
+    ///
+    /// Returns `true` if the event should be allowed (not rate-limited),
+    /// `false` if it should be suppressed.
+    pub fn evaluate(&mut self, log_msg: &LogMessage, ts_sec: i64) -> bool {
+        match self {
+            Limiter::Multi(limiter) => limiter.evaluate(ts_sec),
+            Limiter::SourceLocation(limiter) => {
+                let file = log_msg.file.as_deref().unwrap_or("?");
+                let line = log_msg.line.as_deref().unwrap_or("?");
+                limiter.evaluate(file, line, ts_sec)
+            }
+        }
+    }
+
+    /// Create a multi-rate limiter from a threshold.
+    pub fn multi(threshold: RateThreshold) -> Self {
+        Limiter::Multi(MultiRateLimiter::from(threshold))
+    }
+
+    /// Create a source-location limiter from a threshold.
+    ///
+    /// Note: Only the duration is used; source-location limiters allow one event
+    /// per location per window.
+    pub fn source_location(threshold: RateThreshold) -> Self {
+        Limiter::SourceLocation(SourceLocationRateLimiter::new(
+            threshold.duration,
+            SOURCE_LOCATION_MAX_ENTRIES,
+        ))
     }
 }
 
@@ -210,6 +251,7 @@ impl From<RateThreshold> for MultiRateLimiter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::str::FromStr;
 
     #[test]
     fn parse_rate_threshold() {

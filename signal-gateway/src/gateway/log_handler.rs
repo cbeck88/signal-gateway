@@ -1,30 +1,45 @@
 use super::circular_buffer::CircularBuffer;
-use super::{AdminMessage, MultiRateLimiter, RateThreshold, SourceLocationRateLimiter};
+use super::route::{Destination, Limit, Route};
+use super::{AdminMessage, LimitResult, Limiter, LimiterSet};
 use crate::{
+    concurrent_map::ConcurrentMap,
     human_duration::HumanTMinus,
-    log_message::{Level, LogFilter, LogMessage, Origin},
+    log_message::{LogMessage, Origin},
 };
 use chrono::{TimeDelta, Utc};
 use conf::Conf;
-use serde::Deserialize;
-use std::{fmt, time::Duration};
+use std::fmt;
 use tokio::sync::{Mutex, mpsc::UnboundedSender};
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
-/// Reason why an alert was suppressed
-enum SuppressionReason {
-    /// Suppressed by a configured alert rule (with 0-based rule index)
-    Rule(usize),
-    /// Suppressed by the source-location rate limiter
-    SourceLocation { file: Box<str>, line: Box<str> },
+/// Reason why an alert was suppressed by rate limiting.
+#[derive(Debug)]
+pub enum SuppressionReason {
+    /// No route's filter matched the message.
+    NoRoutes,
+    /// Suppressed by route limiters. Contains the index and result for each
+    /// route whose filter matched but whose limiter blocked the message.
+    Routes(Vec<(usize, LimitResult)>),
+    /// Suppressed by an overall limiter. Contains the limiter index and result.
+    Overall(usize, LimitResult),
 }
 
 impl fmt::Display for SuppressionReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            SuppressionReason::Rule(idx) => write!(f, "rule[{idx}]"),
-            SuppressionReason::SourceLocation { file, line } => {
-                write!(f, "source-location({file}:{line})")
+            SuppressionReason::NoRoutes => write!(f, "no-routes"),
+            SuppressionReason::Routes(failures) => {
+                write!(f, "routes[")?;
+                for (i, (idx, result)) in failures.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{idx}:{result:?}")?;
+                }
+                write!(f, "]")
+            }
+            SuppressionReason::Overall(idx, result) => {
+                write!(f, "overall[{idx}]:{result:?}")
             }
         }
     }
@@ -33,10 +48,12 @@ impl fmt::Display for SuppressionReason {
 /// Config options related to the log handler, and what log messages it chooses to alert on.
 #[derive(Clone, Conf, Debug)]
 pub struct LogHandlerConfig {
-    #[conf(long, env, value_parser = serde_json::from_str)]
-    pub alert_rate_limits: Vec<AlertRule>,
-    #[conf(long, env, default_value = "10m", value_parser = conf_extra::parse_duration)]
-    pub overall_alert_limit: Duration,
+    /// Routes for matching and rate-limiting log messages.
+    #[conf(long, env, value_parser = serde_json::from_str, default_value = "[]")]
+    pub routes: Vec<Route>,
+    /// Overall rate limits applied after route checks pass.
+    #[conf(long, env, value_parser = serde_json::from_str, default_value = "[]")]
+    pub overall_limits: Vec<Limit>,
     #[conf(long, env)]
     pub format_module: bool,
     #[conf(long, env)]
@@ -46,149 +63,154 @@ pub struct LogHandlerConfig {
     pub log_buffer_size: usize,
 }
 
-/// Specifies both a rate limiting threshold, and criteria for the threshold to apply
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AlertRule {
-    #[serde(flatten)]
-    pub filter: LogFilter,
-    pub threshold: RateThreshold,
-}
-
-/// The log handler takes log messages from a single origin and decides what
-/// to do with them.
+/// The log handler takes log messages and decides what to do with them.
 ///
-/// 1. Store them in a small circular buffer
+/// 1. Store them in a small circular buffer (per origin)
 /// 2. If it is an error, and meets other criteria, trigger an alert,
 ///    i.e. send a message to admins containing this log and other recent logs.
 /// 3. The maximum rate of alerts can also be configured.
 ///
 /// Additionally, the log handler can format the buffer of recent logs into a string,
 /// if requested.
-///
-/// Each origin (app + host pair) gets its own LogHandler instance, managed by the Gateway.
 #[derive(Debug)]
 pub struct LogHandler {
     config: LogHandlerConfig,
     admin_mq_tx: UnboundedSender<AdminMessage>,
-    log_buffer: Mutex<CircularBuffer<LogMessage>>,
-    rate_limiters: Vec<(AlertRule, Mutex<MultiRateLimiter>)>,
-    /// Rate limiter keyed by source location (file:line), so different error locations
-    /// can alert independently without suppressing each other.
-    overall_limiter: Mutex<SourceLocationRateLimiter>,
-    /// True if any configured rule uses the module structured data field.
-    any_rule_uses_module: bool,
-    /// True if any configured rule uses the file structured data field.
-    any_rule_uses_file: bool,
-    /// True if any configured rule uses the line structured data field.
-    any_rule_uses_line: bool,
+    /// Log buffers keyed by origin (app + host). Lazily created.
+    log_buffers: ConcurrentMap<Origin, Mutex<CircularBuffer<LogMessage>>>,
+    /// Routes with their associated limiter sets.
+    routes: Vec<(Route, Mutex<LimiterSet>)>,
+    /// Overall rate limiters applied after route checks pass.
+    overall_limits: Vec<Mutex<Limiter>>,
 }
-
-/// Maximum entries in the source-location rate limiter before triggering cleanup
-const OVERALL_LIMITER_MAX_ENTRIES: usize = 2000;
 
 impl LogHandler {
     /// Initialize a new log handler
     pub fn new(config: LogHandlerConfig, admin_mq_tx: UnboundedSender<AdminMessage>) -> Self {
-        let any_rule_uses_module = config
-            .alert_rate_limits
+        let routes = config
+            .routes
             .iter()
-            .any(|r| r.filter.uses_module());
-        let any_rule_uses_file = config
-            .alert_rate_limits
-            .iter()
-            .any(|r| r.filter.uses_file());
-        let any_rule_uses_line = config
-            .alert_rate_limits
-            .iter()
-            .any(|r| r.filter.uses_line());
-        let rate_limiters = config
-            .alert_rate_limits
-            .iter()
-            .map(|rule| {
-                (
-                    rule.clone(),
-                    Mutex::new(MultiRateLimiter::from(rule.threshold)),
-                )
-            })
-            .collect::<Vec<_>>();
-        let overall_limiter = Mutex::new(SourceLocationRateLimiter::new(
-            config.overall_alert_limit,
-            OVERALL_LIMITER_MAX_ENTRIES,
-        ));
+            .map(|route| (route.clone(), Mutex::new(route.make_limiter_set())))
+            .collect();
 
-        let log_buffer = Mutex::new(CircularBuffer::new(config.log_buffer_size));
+        let overall_limits = config
+            .overall_limits
+            .iter()
+            .map(|limit| Mutex::new(limit.make_limiter()))
+            .collect();
 
         Self {
             config,
             admin_mq_tx,
-            log_buffer,
-            rate_limiters,
-            overall_limiter,
-            any_rule_uses_module,
-            any_rule_uses_file,
-            any_rule_uses_line,
+            log_buffers: ConcurrentMap::new(),
+            routes,
+            overall_limits,
         }
     }
 
-    /// Format recent logs into a string
-    pub async fn format_logs(&self) -> String {
-        let lk = self.log_buffer.lock().await;
+    /// Format recent logs into a string for all origins, optionally filtered.
+    ///
+    /// If `filter` is provided, only origins matching the filter are included.
+    pub async fn format_logs(&self, filter: Option<&str>) -> String {
+        self.log_buffers
+            .read_all(|buffers| {
+                if buffers.is_empty() {
+                    return "No log sources registered yet".to_string();
+                }
 
-        let mut text = format!("{} log messages (newest first):\n", lk.len());
+                let mut text = String::new();
+                let now = Utc::now().timestamp();
 
-        // Calculate now once for consistent relative timestamps
-        let now = Utc::now().timestamp();
+                for (origin, buffer_mutex) in buffers.iter() {
+                    // Apply filter if present
+                    if let Some(f) = filter {
+                        if !origin.matches_filter(f) {
+                            continue;
+                        }
+                    }
 
-        // Collect and reverse to show newest first
-        let messages: Vec<_> = lk.iter().collect();
-        for log_msg in messages.into_iter().rev() {
-            self.write_log_msg(&mut text, log_msg, now);
-        }
-        text
+                    // We can't await inside read_all, so use try_lock
+                    // If the buffer is locked, skip it (rare case)
+                    let Some(buffer) = buffer_mutex.try_lock().ok() else {
+                        continue;
+                    };
+
+                    use std::fmt::Write;
+                    writeln!(&mut text, "=== [{origin}] ===").unwrap();
+                    writeln!(&mut text, "{} log messages (newest first):", buffer.len()).unwrap();
+
+                    // Collect and reverse to show newest first
+                    let messages: Vec<_> = buffer.iter().collect();
+                    for log_msg in messages.into_iter().rev() {
+                        self.write_log_msg(&mut text, log_msg, now);
+                    }
+                    text.push('\n');
+                }
+
+                if text.is_empty() {
+                    "No matching log sources".to_string()
+                } else {
+                    text
+                }
+            })
+            .await
     }
 
     /// Consume a new log message from the given origin
     pub async fn handle_log_message(&self, mut log_msg: LogMessage, origin: Origin) {
-        let suppression_reason = self.check_suppression(&mut log_msg).await;
-        if let Some(reason) = &suppression_reason
-            && log_msg.level <= Level::ERROR
-        {
+        let ts_sec = *log_msg
+            .timestamp
+            .get_or_insert_with(|| Utc::now().timestamp());
+
+        let rate_limit_result = self.check_rate_limiters(&log_msg, &origin, ts_sec).await;
+
+        if let Err(reason) = &rate_limit_result {
             let sev = log_msg.level.to_str();
             info!("Suppressed {sev} ({reason}):\n{}", log_msg.msg);
         }
 
-        // Record this new message.
-        // Then, if we should alert now, also format the whole buffer to a string,
-        // and then release the lock.
-        let formatted_text = {
-            let mut lk = self.log_buffer.lock().await;
-            lk.push_back(log_msg);
-            if suppression_reason.is_some() {
-                return;
+        let buffer_size = self.config.log_buffer_size;
+
+        // Get or create the buffer for this origin, then record the message
+        let formatted_text = self
+            .log_buffers
+            .get_or_insert_with(
+                origin.clone(),
+                || Mutex::new(CircularBuffer::new(buffer_size)),
+                |buffer_mutex| {
+                    // Lock the buffer and process the message
+                    let mut buffer = buffer_mutex.blocking_lock();
+                    buffer.push_back(log_msg);
+
+                    if rate_limit_result.is_err() {
+                        return None;
+                    }
+
+                    let mut text = String::default();
+                    let now = Utc::now().timestamp();
+
+                    // Iterate in reverse (newest first) without copying
+                    for log_msg in buffer.iter().rev() {
+                        self.write_log_msg(&mut text, log_msg, now);
+                    }
+                    buffer.clear();
+
+                    Some(text)
+                },
+            )
+            .await;
+
+        // Send alert if we have formatted text
+        if let Some(text) = formatted_text {
+            // TODO: Use destination override from rate_limit_result.ok() if present
+            if let Err(_err) = self.admin_mq_tx.send(AdminMessage {
+                origin: Some(origin),
+                text,
+                attachment_paths: Default::default(),
+                summary: None,
+            }) {
+                error!("Could not send alert message, queue is closed");
             }
-
-            let mut text = String::default();
-
-            // Calculate now once for consistent relative timestamps
-            let now = Utc::now().timestamp();
-
-            // Iterate in reverse (newest first) without copying
-            for log_msg in lk.iter().rev() {
-                self.write_log_msg(&mut text, log_msg, now);
-            }
-            lk.clear();
-
-            text
-        };
-
-        if let Err(_err) = self.admin_mq_tx.send(AdminMessage {
-            origin: Some(origin),
-            text: formatted_text,
-            attachment_paths: Default::default(),
-            summary: None,
-        }) {
-            error!("Could not send alert message, queue is closed");
         }
     }
 
@@ -251,63 +273,75 @@ impl LogHandler {
         }
     }
 
-    /// Check if an alert should be suppressed for a given error message.
+    /// Check if a log message passes all rate limiters.
     ///
-    /// Returns `None` if the alert should fire, or `Some(reason)` if suppressed.
-    async fn check_suppression(&self, log_msg: &mut LogMessage) -> Option<SuppressionReason> {
-        let ts_sec = *log_msg
-            .timestamp
-            .get_or_insert_with(|| Utc::now().timestamp());
+    /// Tests the message against each route's filter in succession (no early return).
+    /// For routes where the filter matches, evaluates the limiter set.
+    ///
+    /// Returns:
+    /// - `Ok(Some(destination))` if passed and a route specified a destination override
+    /// - `Ok(None)` if passed with no destination override
+    /// - `Err(SuppressionReason::Routes(...))` if no route's limiter passed
+    /// - `Err(SuppressionReason::Overall(...))` if routes passed but overall limiter failed
+    async fn check_rate_limiters(
+        &self,
+        log_msg: &LogMessage,
+        origin: &Origin,
+        ts_sec: i64,
+    ) -> Result<Option<Destination>, SuppressionReason> {
+        let mut route_failures: Vec<(usize, LimitResult)> = Vec::new();
+        let mut first_passed_destination: Option<Option<Destination>> = None;
 
-        let high_severity = log_msg.level <= Level::ERROR;
-        if !high_severity {
-            // Low severity messages are always "suppressed" (not alerted on)
-            // but we don't need to log a reason for this
-            return Some(SuppressionReason::Rule(usize::MAX));
-        }
+        // Test against each route's filter and limiter
+        for (idx, (route, limiter_set)) in self.routes.iter().enumerate() {
+            // Check if message level meets route's alert threshold
+            if log_msg.level > route.alert_level {
+                continue;
+            }
 
-        // Warn if rules expect structured data but the message doesn't have it
-        let has_module = log_msg.module_path.is_some();
-        let has_file = log_msg.file.is_some();
-        let has_line = log_msg.line.is_some();
-        if (self.any_rule_uses_module && !has_module)
-            || (self.any_rule_uses_file && !has_file)
-            || (self.any_rule_uses_line && !has_line)
-        {
-            warn!(
-                "Log message missing source location data, filtering rules may not work: {log_msg:#?}"
-            );
-        }
+            // Check if message matches route's filter (if any)
+            let filter_matches = route
+                .filter
+                .as_ref()
+                .map_or(true, |f| f.matches(log_msg));
 
-        // Check each configured rule - track which rule suppressed the alert
-        // Note: we check all rules even if one already suppressed, to update all rate limiters
-        let mut suppressed_by_rule: Option<usize> = None;
-        for (idx, (rule, limiter)) in self.rate_limiters.iter().enumerate() {
-            if rule.filter.matches(log_msg) && !limiter.lock().await.evaluate(ts_sec) {
-                suppressed_by_rule.get_or_insert(idx);
+            if !filter_matches {
+                continue;
+            }
+
+            // Filter matched, evaluate the limiter set
+            let result = limiter_set.lock().await.evaluate(log_msg, origin, ts_sec);
+
+            match result {
+                LimitResult::Passed => {
+                    // Remember the first route that passed
+                    if first_passed_destination.is_none() {
+                        first_passed_destination = Some(route.destination.clone());
+                    }
+                }
+                _ => {
+                    // Record the failure
+                    route_failures.push((idx, result));
+                }
             }
         }
-        if let Some(idx) = suppressed_by_rule {
-            return Some(SuppressionReason::Rule(idx));
+
+        // If no route passed, return the appropriate error
+        let first_destination = match first_passed_destination {
+            Some(dest) => dest,
+            None if route_failures.is_empty() => return Err(SuppressionReason::NoRoutes),
+            None => return Err(SuppressionReason::Routes(route_failures)),
+        };
+
+        // At least one route passed, now check overall limits
+        for (idx, limiter) in self.overall_limits.iter().enumerate() {
+            if !limiter.lock().await.evaluate(log_msg, ts_sec) {
+                return Err(SuppressionReason::Overall(idx, LimitResult::Limiter(0)));
+            }
         }
 
-        // Extract source location for per-location rate limiting
-        let file = log_msg.file.as_deref().unwrap_or("?");
-        let line = log_msg.line.as_deref().unwrap_or("?");
-
-        if !self
-            .overall_limiter
-            .lock()
-            .await
-            .evaluate(file, line, ts_sec)
-        {
-            return Some(SuppressionReason::SourceLocation {
-                file: file.into(),
-                line: line.into(),
-            });
-        }
-
-        None // Alert should fire
+        // All checks passed
+        Ok(first_destination)
     }
 }
 

@@ -25,7 +25,7 @@ use std::{collections::HashMap, fmt::Write, net::SocketAddr, path::PathBuf};
 use tokio::{
     join,
     sync::{
-        Mutex, RwLock,
+        Mutex,
         mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     },
 };
@@ -37,8 +37,11 @@ mod circular_buffer;
 mod log_handler;
 use log_handler::{LogHandler, LogHandlerConfig};
 
+mod route;
+pub use route::{Destination, Limit, RateThreshold, Route};
+
 mod rate_limiter;
-use rate_limiter::{MultiRateLimiter, RateThreshold, SourceLocationRateLimiter};
+pub use rate_limiter::{LimitResult, Limiter, LimiterSet};
 
 /// Configuration for the gateway.
 #[derive(Conf, Debug)]
@@ -186,8 +189,8 @@ pub struct Gateway {
     admin_mq_rx: Mutex<UnboundedReceiver<AdminMessage>>,
     token: CancellationToken,
     prometheus: Option<Prometheus>,
-    /// Log handlers keyed by origin (app + host). Lazily created when first message from an origin arrives.
-    log_handlers: RwLock<HashMap<Origin, LogHandler>>,
+    /// Log handler for processing log messages from all origins.
+    log_handler: LogHandler,
     /// Handler for admin messages that don't start with `/`
     message_handler: Option<Box<dyn MessageHandler>>,
 }
@@ -208,13 +211,15 @@ impl Gateway {
             .transpose()
             .expect("Invalid prometheus config");
 
+        let log_handler = LogHandler::new(config.log_handler.clone(), admin_mq_tx.clone());
+
         Self {
             config,
             admin_mq_tx,
             admin_mq_rx: Mutex::new(admin_mq_rx),
             token,
             prometheus,
-            log_handlers: RwLock::new(HashMap::new()),
+            log_handler,
             message_handler,
         }
     }
@@ -558,25 +563,10 @@ impl Gateway {
     async fn handle_gateway_command(&self, cmd: GatewayCommand) -> MessageHandlerResult {
         match cmd {
             GatewayCommand::Log { filter } => {
-                let handlers = self.log_handlers.read().await;
-                if handlers.is_empty() {
-                    return Ok(AdminMessageResponse::new("No log sources registered yet"));
-                }
-                let mut text = String::new();
-                for (origin, handler) in handlers.iter() {
-                    // Apply filter if present
-                    if let Some(ref f) = filter
-                        && !origin.matches_filter(f)
-                    {
-                        continue;
-                    }
-                    writeln!(&mut text, "=== [{origin}] ===").unwrap();
-                    text.push_str(&handler.format_logs().await);
-                    text.push('\n');
-                }
-                if text.is_empty() {
-                    return Ok(AdminMessageResponse::new("No matching log sources"));
-                }
+                let text = self
+                    .log_handler
+                    .format_logs(filter.as_deref())
+                    .await;
                 Ok(AdminMessageResponse::new(text))
             }
             GatewayCommand::Query { query } => {
@@ -826,24 +816,7 @@ impl Gateway {
     pub async fn handle_log_message(&self, log_msg: impl Into<LogMessage>) {
         let log_msg = log_msg.into();
         let origin = Origin::from(&log_msg);
-
-        // Try to get existing handler with read lock first
-        {
-            let handlers = self.log_handlers.read().await;
-            if let Some(handler) = handlers.get(&origin) {
-                handler.handle_log_message(log_msg, origin).await;
-                return;
-            }
-        }
-
-        // Handler doesn't exist, need to create one with write lock
-        let mut handlers = self.log_handlers.write().await;
-        // Double-check in case another task created it while we were waiting for the write lock
-        let handler = handlers.entry(origin.clone()).or_insert_with(|| {
-            info!("Creating new log handler for origin: {origin}");
-            LogHandler::new(self.config.log_handler.clone(), self.admin_mq_tx.clone())
-        });
-        handler.handle_log_message(log_msg, origin).await;
+        self.log_handler.handle_log_message(log_msg, origin).await;
     }
 }
 

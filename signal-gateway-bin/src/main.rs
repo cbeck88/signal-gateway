@@ -1,3 +1,7 @@
+//! Signal Gateway binary - receives alerts and logs, forwards to Signal messenger.
+
+#![deny(missing_docs)]
+
 use conf::{Conf, Subcommands};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
@@ -18,7 +22,7 @@ use admin_netcat::AdminNetcatConfig;
 mod syslog;
 use syslog::SyslogConfig;
 
-mod json;
+pub mod json;
 use json::JsonConfig;
 
 /// Admin message handler configuration - select how non-command messages are handled

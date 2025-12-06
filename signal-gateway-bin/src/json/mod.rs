@@ -156,6 +156,7 @@ async fn handle_tcp_connection(stream: TcpStream, gateway: &Gateway) -> std::io:
 /// A flexible JSON log message format compatible with logstash and similar systems.
 ///
 /// Supports various field names and formats commonly used in logging systems.
+#[non_exhaustive]
 #[derive(Debug, Deserialize)]
 pub struct JsonLogMessage {
     /// The log message text - accepts "message" or "msg"
@@ -163,7 +164,7 @@ pub struct JsonLogMessage {
     pub message: String,
 
     /// Log level - accepts various formats (error, ERROR, err, etc.)
-    #[serde(default, alias = "severity", deserialize_with = "deserialize_level")]
+    #[serde(default, alias = "severity", deserialize_with = "deserialize_opt_level")]
     pub level: Option<Level>,
 
     /// Timestamp - accepts Unix epoch seconds (int or string) or RFC3339 string
@@ -228,29 +229,13 @@ impl JsonLogMessage {
     }
 }
 
-/// Deserialize a log level from various string formats
-fn deserialize_level<'de, D>(deserializer: D) -> Result<Option<Level>, D::Error>
+/// Deserialize an optional log level, returning None for unknown values.
+fn deserialize_opt_level<'de, D>(deserializer: D) -> Result<Option<Level>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let opt: Option<String> = Option::deserialize(deserializer)?;
-    Ok(opt.and_then(|s| parse_level(&s)))
-}
-
-/// Parse a level string into a Level enum
-fn parse_level(s: &str) -> Option<Level> {
-    match s.to_lowercase().as_str() {
-        "emergency" | "emerg" => Some(Level::EMERGENCY),
-        "alert" => Some(Level::ALERT),
-        "critical" | "crit" | "fatal" => Some(Level::CRITICAL),
-        "error" | "err" => Some(Level::ERROR),
-        "warning" | "warn" => Some(Level::WARNING),
-        "notice" => Some(Level::NOTICE),
-        "info" | "information" => Some(Level::INFO),
-        "debug" => Some(Level::DEBUG),
-        "trace" => Some(Level::TRACE),
-        _ => None,
-    }
+    Ok(opt.and_then(|s| Level::from_str(&s)))
 }
 
 /// Deserialize a timestamp from Unix epoch (int or string) or RFC3339 string

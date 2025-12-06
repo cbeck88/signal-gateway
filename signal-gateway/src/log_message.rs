@@ -1,6 +1,6 @@
 //! Log message schema and types.
 
-use serde::Deserialize;
+use serde::{Deserialize, de};
 
 /// Log severity level, following syslog conventions.
 ///
@@ -43,6 +43,48 @@ impl Level {
             Self::DEBUG => "DEBUG",
             Self::TRACE => "TRACE",
         }
+    }
+
+    /// Parse a level from a string (case-insensitive).
+    ///
+    /// Accepts various common aliases:
+    /// - emergency, emerg
+    /// - alert
+    /// - critical, crit, fatal
+    /// - error, err
+    /// - warning, warn
+    /// - notice, note
+    /// - info, information
+    /// - debug
+    /// - trace
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_ascii_uppercase().as_str() {
+            "EMERGENCY" | "EMERG" => Some(Self::EMERGENCY),
+            "ALERT" => Some(Self::ALERT),
+            "CRITICAL" | "CRIT" | "FATAL" => Some(Self::CRITICAL),
+            "ERROR" | "ERR" => Some(Self::ERROR),
+            "WARNING" | "WARN" => Some(Self::WARNING),
+            "NOTICE" | "NOTE" => Some(Self::NOTICE),
+            "INFO" | "INFORMATION" => Some(Self::INFO),
+            "DEBUG" => Some(Self::DEBUG),
+            "TRACE" => Some(Self::TRACE),
+            _ => None,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for Level {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: de::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        Level::from_str(&s).ok_or_else(|| {
+            de::Error::custom(format!(
+                "unknown log level '{}', expected one of: emergency, alert, critical, error, warning, notice, info, debug, trace",
+                s
+            ))
+        })
     }
 }
 
