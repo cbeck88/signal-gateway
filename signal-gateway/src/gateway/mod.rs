@@ -468,7 +468,7 @@ impl Gateway {
                             let from_group = data_message.group_info.as_ref().map(|g| g.group_id.clone());
 
                             // Check if sender is an admin
-                            if !self.config.admin_signal_uuids.contains(&msg.envelope.source_uuid) {
+                            if !self.config.admin_signal_uuids.is_trusted(&msg.envelope) {
                                 warn!("Ignoring message from non-admin: {msg:?}");
                                 continue;
                             }

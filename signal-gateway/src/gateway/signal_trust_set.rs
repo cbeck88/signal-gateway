@@ -4,6 +4,7 @@
 //! - Map: `{"uuid1": ["safety1", "safety2"], "uuid2": []}` - UUIDs with safety numbers
 //! - Sequence: `["uuid1", "uuid2"]` - UUIDs with no safety numbers (simpler)
 
+use crate::signal_jsonrpc::Envelope;
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use std::collections::HashMap;
@@ -25,9 +26,12 @@ impl SignalTrustSet {
         Self::default()
     }
 
-    /// Check if a UUID is a registered admin.
-    pub fn contains(&self, uuid: &str) -> bool {
-        self.map.contains_key(uuid)
+    /// Check if the sender of an envelope is trusted.
+    ///
+    /// Currently checks if the source UUID is in the trust set.
+    /// Will eventually also verify safety numbers.
+    pub fn is_trusted(&self, envelope: &Envelope) -> bool {
+        self.map.contains_key(&envelope.source_uuid)
     }
 
     /// Get all UUIDs as an iterator.
@@ -129,28 +133,28 @@ mod tests {
     #[test]
     fn test_deserialize_map() {
         let json = r#"{"uuid1": ["safety1", "safety2"], "uuid2": []}"#;
-        let uuids: SignalTrustSet = serde_json::from_str(json).unwrap();
+        let trust_set: SignalTrustSet = serde_json::from_str(json).unwrap();
 
-        assert_eq!(uuids.len(), 2);
-        assert!(uuids.contains("uuid1"));
-        assert!(uuids.contains("uuid2"));
-        assert_eq!(uuids.get("uuid1").unwrap(), &vec!["safety1", "safety2"]);
-        assert_eq!(uuids.get("uuid2").unwrap(), &Vec::<String>::new());
+        assert_eq!(trust_set.len(), 2);
+        assert!(trust_set.get("uuid1").is_some());
+        assert!(trust_set.get("uuid2").is_some());
+        assert_eq!(trust_set.get("uuid1").unwrap(), &vec!["safety1", "safety2"]);
+        assert_eq!(trust_set.get("uuid2").unwrap(), &Vec::<String>::new());
     }
 
     #[test]
     fn test_deserialize_seq() {
         let json = r#"["uuid1", "uuid2", "uuid3"]"#;
-        let uuids: SignalTrustSet = serde_json::from_str(json).unwrap();
+        let trust_set: SignalTrustSet = serde_json::from_str(json).unwrap();
 
-        assert_eq!(uuids.len(), 3);
-        assert!(uuids.contains("uuid1"));
-        assert!(uuids.contains("uuid2"));
-        assert!(uuids.contains("uuid3"));
+        assert_eq!(trust_set.len(), 3);
+        assert!(trust_set.get("uuid1").is_some());
+        assert!(trust_set.get("uuid2").is_some());
+        assert!(trust_set.get("uuid3").is_some());
         // All should have empty safety numbers
-        assert!(uuids.get("uuid1").unwrap().is_empty());
-        assert!(uuids.get("uuid2").unwrap().is_empty());
-        assert!(uuids.get("uuid3").unwrap().is_empty());
+        assert!(trust_set.get("uuid1").unwrap().is_empty());
+        assert!(trust_set.get("uuid2").unwrap().is_empty());
+        assert!(trust_set.get("uuid3").unwrap().is_empty());
     }
 
     #[test]

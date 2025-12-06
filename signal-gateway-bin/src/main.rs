@@ -244,7 +244,7 @@ limits = [
             Duration::from_secs(10)
         );
         assert_eq!(config.gateway.admin_signal_uuids.len(), 2);
-        assert!(config.gateway.admin_signal_uuids.contains("abc-123-uuid"));
+        assert!(config.gateway.admin_signal_uuids.get("abc-123-uuid").is_some());
 
         let syslog = config.syslog.expect("syslog should be present");
         assert_eq!(syslog.listen_addr, "0.0.0.0:1514".parse().unwrap());
