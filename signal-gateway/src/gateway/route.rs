@@ -73,6 +73,34 @@ impl TryFrom<String> for RateThreshold {
     }
 }
 
+/// A rate limit rule for suppressing repeated alerts.
+///
+/// Combines a filter to match specific log messages with a rate threshold.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Limit {
+    /// Filter criteria for messages this limit applies to.
+    #[serde(flatten)]
+    pub filter: LogFilter,
+    /// Rate threshold for suppressing alerts.
+    pub threshold: RateThreshold,
+    /// If true, rate limit independently per source location (file:line).
+    /// If false (default), count all matching events together.
+    #[serde(default)]
+    pub by_source_location: bool,
+}
+
+impl Limit {
+    /// Create the appropriate limiter for this limit configuration.
+    pub fn make_limiter(&self) -> super::rate_limiter::Limiter {
+        if self.by_source_location {
+            super::rate_limiter::Limiter::source_location(self.threshold)
+        } else {
+            super::rate_limiter::Limiter::multi(self.threshold)
+        }
+    }
+}
+
 /// A route configuration for processing log messages.
 ///
 /// Routes match incoming log messages based on an optional filter, then apply
@@ -112,44 +140,6 @@ fn default_alert_level() -> Level {
     Level::ERROR
 }
 
-/// Destination override for alert messages.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Destination {
-    /// Send to specific recipient UUIDs.
-    Recipients(Vec<String>),
-    /// Send to a Signal group by group ID.
-    Group(String),
-}
-
-/// A rate limit rule for suppressing repeated alerts.
-///
-/// Combines a filter to match specific log messages with a rate threshold.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Limit {
-    /// Filter criteria for messages this limit applies to.
-    #[serde(flatten)]
-    pub filter: LogFilter,
-    /// Rate threshold for suppressing alerts.
-    pub threshold: RateThreshold,
-    /// If true, rate limit independently per source location (file:line).
-    /// If false (default), count all matching events together.
-    #[serde(default)]
-    pub by_source_location: bool,
-}
-
-impl Limit {
-    /// Create the appropriate limiter for this limit configuration.
-    pub fn make_limiter(&self) -> super::rate_limiter::Limiter {
-        if self.by_source_location {
-            super::rate_limiter::Limiter::source_location(self.threshold)
-        } else {
-            super::rate_limiter::Limiter::multi(self.threshold)
-        }
-    }
-}
-
 impl Route {
     /// Create a limiter set from this route's limit configurations.
     pub fn make_limiter_set(&self) -> super::rate_limiter::LimiterSet {
@@ -167,4 +157,14 @@ impl Default for Route {
             global_limit: Vec::new(),
         }
     }
+}
+
+/// Destination override for alert messages.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Destination {
+    /// Send to specific recipient UUIDs.
+    Recipients(Vec<String>),
+    /// Send to a Signal group by group ID.
+    Group(String),
 }
