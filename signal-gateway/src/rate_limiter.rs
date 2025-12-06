@@ -1,10 +1,79 @@
-use super::route::{Limit, RateThreshold};
+//! Rate limiting for log alerts.
+
 use crate::log_message::{LogMessage, Origin};
+use serde::Deserialize;
 use std::{
     collections::HashMap,
+    str::FromStr,
     sync::atomic::{AtomicI64, Ordering},
     time::Duration,
 };
+
+/// Represents a rate threshold, expressed as a string in the format:
+///
+/// * `1 / 10s`
+/// * `2 / 5m`
+/// * `3 / 1h`
+/// * `> 1 / 10s`
+/// * `>= 2 / 10s`
+///
+/// When the comparator is omitted, it is treated as `>=`
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(try_from = "String")]
+pub struct RateThreshold {
+    /// Number of events required to trigger the threshold.
+    pub times: usize,
+    /// Time window for counting events.
+    pub duration: Duration,
+}
+
+impl FromStr for RateThreshold {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let Some((first, second)) = s.trim().split_once('/') else {
+            return Err("missing '/' character in rate threshold".into());
+        };
+
+        let duration = conf_extra::parse_duration(second.trim())?;
+
+        let first = first.trim();
+        let maybe_mid = first.as_bytes().iter().position(|b| b.is_ascii_digit());
+        let (comparator, num) = if let Some(mid) = maybe_mid {
+            first.split_at(mid)
+        } else {
+            ("", first)
+        };
+
+        let is_greater_equal = match comparator.trim() {
+            ">" => false,
+            ">=" | "=>" | "" => true,
+            _ => return Err(format!("Unexpected comparator format: {comparator}")),
+        };
+
+        let num = num.trim();
+        let mut times: usize = num
+            .parse()
+            .map_err(|err| format!("invalid number {num}: {err}"))?;
+
+        if !is_greater_equal {
+            times += 1;
+        }
+
+        if times == 0 {
+            return Err("Invalid threshold, times must be > 0".into());
+        }
+
+        Ok(RateThreshold { times, duration })
+    }
+}
+
+impl TryFrom<String> for RateThreshold {
+    type Error = <RateThreshold as FromStr>::Err;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        RateThreshold::from_str(&s)
+    }
+}
 
 /// Maximum entries in a source-location rate limiter before triggering cleanup.
 const SOURCE_LOCATION_MAX_ENTRIES: usize = 2000;
@@ -18,18 +87,7 @@ pub enum Limiter {
     SourceLocation(SourceLocationRateLimiter),
 }
 
-/// A set of limiters for a route, containing both per-origin and global limiters.
-#[derive(Debug)]
-pub struct LimiterSet {
-    /// Limit configurations (used to create limiters for new origins).
-    limits: Vec<Limit>,
-    /// Per-origin rate limiters, keyed by origin. Lazily created.
-    limiters: HashMap<Origin, Vec<Limiter>>,
-    /// Global rate limiters (shared across all origins).
-    global_limiters: Vec<Limiter>,
-}
-
-/// Result of evaluating a log message against a limiter set.
+/// Result of evaluating a limiter set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LimitResult {
     /// The event passed all limits (not rate-limited).
@@ -40,13 +98,35 @@ pub enum LimitResult {
     GlobalLimiter(usize),
 }
 
+/// A set of limiters for a route, containing both per-origin and global limiters.
+pub struct LimiterSet {
+    /// Factory to create limiters for new origins.
+    make_limiters: Box<dyn Fn() -> Vec<Limiter> + Send + Sync>,
+    /// Per-origin rate limiters, keyed by origin. Lazily created.
+    limiters: HashMap<Origin, Vec<Limiter>>,
+    /// Global rate limiters (shared across all origins).
+    global_limiters: Vec<Limiter>,
+}
+
+impl std::fmt::Debug for LimiterSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LimiterSet")
+            .field("limiters", &self.limiters)
+            .field("global_limiters", &self.global_limiters)
+            .finish_non_exhaustive()
+    }
+}
+
 impl LimiterSet {
-    /// Create a new limiter set from limit configurations.
-    pub fn new(limits: Vec<Limit>, global_limits: Vec<Limit>) -> Self {
+    /// Create a new limiter set with factories for per-origin and global limiters.
+    pub fn new(
+        make_limiters: impl Fn() -> Vec<Limiter> + Send + Sync + 'static,
+        global_limiters: Vec<Limiter>,
+    ) -> Self {
         Self {
-            limits,
+            make_limiters: Box::new(make_limiters),
             limiters: HashMap::new(),
-            global_limiters: global_limits.iter().map(|l| l.make_limiter()).collect(),
+            global_limiters,
         }
     }
 
@@ -60,7 +140,7 @@ impl LimiterSet {
         let origin_limiters = self
             .limiters
             .entry(origin.clone())
-            .or_insert_with(|| self.limits.iter().map(|l| l.make_limiter()).collect());
+            .or_insert_with(&self.make_limiters);
 
         for (i, limiter) in origin_limiters.iter_mut().enumerate() {
             if !limiter.evaluate(log_msg, ts_sec) {

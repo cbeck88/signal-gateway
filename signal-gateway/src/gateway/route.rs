@@ -4,74 +4,8 @@
 //! and destination overrides.
 
 use crate::log_message::{Level, LogFilter};
+use crate::rate_limiter::{Limiter, LimiterSet, RateThreshold};
 use serde::Deserialize;
-use std::{str::FromStr, time::Duration};
-
-/// Represents a rate threshold, expressed as a string in the format:
-///
-/// * `1 / 10s`
-/// * `2 / 5m`
-/// * `3 / 1h`
-/// * `> 1 / 10s`
-/// * `>= 2 / 10s`
-///
-/// When the comparator is omitted, it is treated as `>=`
-#[derive(Clone, Copy, Debug, Deserialize)]
-#[serde(try_from = "String")]
-pub struct RateThreshold {
-    /// Number of events required to trigger the threshold.
-    pub times: usize,
-    /// Time window for counting events.
-    pub duration: Duration,
-}
-
-impl FromStr for RateThreshold {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let Some((first, second)) = s.trim().split_once('/') else {
-            return Err("missing '/' character in rate threshold".into());
-        };
-
-        let duration = conf_extra::parse_duration(second.trim())?;
-
-        let first = first.trim();
-        let maybe_mid = first.as_bytes().iter().position(|b| b.is_ascii_digit());
-        let (comparator, num) = if let Some(mid) = maybe_mid {
-            first.split_at(mid)
-        } else {
-            ("", first)
-        };
-
-        let is_greater_equal = match comparator.trim() {
-            ">" => false,
-            ">=" | "=>" | "" => true,
-            _ => return Err(format!("Unexpected comparator format: {comparator}")),
-        };
-
-        let num = num.trim();
-        let mut times: usize = num
-            .parse()
-            .map_err(|err| format!("invalid number {num}: {err}"))?;
-
-        if !is_greater_equal {
-            times += 1;
-        }
-
-        if times == 0 {
-            return Err("Invalid threshold, times must be > 0".into());
-        }
-
-        Ok(RateThreshold { times, duration })
-    }
-}
-
-impl TryFrom<String> for RateThreshold {
-    type Error = <RateThreshold as FromStr>::Err;
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        RateThreshold::from_str(&s)
-    }
-}
 
 /// A rate limit rule for suppressing repeated alerts.
 ///
@@ -92,11 +26,11 @@ pub struct Limit {
 
 impl Limit {
     /// Create the appropriate limiter for this limit configuration.
-    pub fn make_limiter(&self) -> super::rate_limiter::Limiter {
+    pub fn make_limiter(&self) -> Limiter {
         if self.by_source_location {
-            super::rate_limiter::Limiter::source_location(self.threshold)
+            Limiter::source_location(self.threshold)
         } else {
-            super::rate_limiter::Limiter::multi(self.threshold)
+            Limiter::multi(self.threshold)
         }
     }
 }
@@ -142,8 +76,13 @@ fn default_alert_level() -> Level {
 
 impl Route {
     /// Create a limiter set from this route's limit configurations.
-    pub fn make_limiter_set(&self) -> super::rate_limiter::LimiterSet {
-        super::rate_limiter::LimiterSet::new(self.limit.clone(), self.global_limit.clone())
+    pub fn make_limiter_set(&self) -> LimiterSet {
+        let limits = self.limit.clone();
+        let global_limiters = self.global_limit.iter().map(|l| l.make_limiter()).collect();
+        LimiterSet::new(
+            move || limits.iter().map(|l| l.make_limiter()).collect(),
+            global_limiters,
+        )
     }
 }
 
