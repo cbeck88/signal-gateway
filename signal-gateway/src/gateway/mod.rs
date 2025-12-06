@@ -20,13 +20,17 @@ use http::{Method, Request, Response, StatusCode};
 use http_body::Body;
 use http_body_util::BodyExt;
 use prometheus_http_client::{AlertStatus, ExtractLabels};
-use std::{collections::HashMap, fmt::Write, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{
+    collections::HashMap,
+    fmt::Write,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::Mutex,
+    time::Duration,
+};
 use tokio::{
     join,
-    sync::{
-        Mutex,
-        mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
-    },
+    sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
 };
 use tokio_util::{bytes::Buf, sync::CancellationToken};
 use tracing::{debug, error, info, warn};
@@ -216,7 +220,9 @@ impl SignalAlertMessage {
 pub struct Gateway {
     config: GatewayConfig,
     signal_alert_mq_tx: UnboundedSender<SignalAlertMessage>,
-    signal_alert_mq_rx: Mutex<UnboundedReceiver<SignalAlertMessage>>,
+    /// Alert receiver, wrapped in Option so it can be taken by run().
+    /// This ensures run() can only be called once.
+    signal_alert_mq_rx: Mutex<Option<UnboundedReceiver<SignalAlertMessage>>>,
     token: CancellationToken,
     prometheus: Option<Prometheus>,
     /// Log handler for processing log messages from all origins.
@@ -246,7 +252,7 @@ impl Gateway {
         Self {
             config,
             signal_alert_mq_tx,
-            signal_alert_mq_rx: Mutex::new(signal_alert_mq_rx),
+            signal_alert_mq_rx: Mutex::new(Some(signal_alert_mq_rx)),
             token,
             prometheus,
             log_handler,
@@ -255,13 +261,23 @@ impl Gateway {
     }
 
     /// Run the gateway main loop, reconnecting to signal-cli on errors.
+    ///
+    /// # Panics
+    /// Panics if `Gateway::run` is called more than once on a given `Gateway`.
     pub async fn run(&self) {
+        let mut alert_rx = self
+            .signal_alert_mq_rx
+            .lock()
+            .unwrap()
+            .take()
+            .expect("Gateway::run can only be called once");
+
         loop {
             if self.token.is_cancelled() {
                 return;
             }
 
-            if let Err(err) = self.connect_and_run().await {
+            if let Err(err) = self.connect_and_run(&mut alert_rx).await {
                 error!("Error with signal-cli, reconnecting: {err}");
                 tokio::time::sleep(Duration::from_secs(5)).await;
             }
@@ -269,7 +285,10 @@ impl Gateway {
     }
 
     /// Connect to signal-cli and run the main loop.
-    async fn connect_and_run(&self) -> Result<(), Box<dyn std::error::Error>> {
+    async fn connect_and_run(
+        &self,
+        alert_rx: &mut UnboundedReceiver<SignalAlertMessage>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
         #[cfg(unix)]
         if let Some(path) = &self.config.signal_cli_socket_path {
             info!(
@@ -277,13 +296,13 @@ impl Gateway {
                 path.display()
             );
             let client = connect_ipc(path).await?;
-            return Ok(self.do_run(&client).await?);
+            return Ok(self.do_run(&client, alert_rx).await?);
         }
 
         if let Some(addr) = &self.config.signal_cli_tcp_addr {
             info!("Connecting to signal-cli via TCP: {addr}");
             let client = connect_tcp(addr).await?;
-            return Ok(self.do_run(&client).await?);
+            return Ok(self.do_run(&client, alert_rx).await?);
         }
 
         // This shouldn't happen due to one_of_fields validation
@@ -388,13 +407,13 @@ impl Gateway {
         }
     }
 
-    async fn do_run(&self, signal_cli: &impl RpcClient) -> Result<(), RpcClientError> {
+    async fn do_run(
+        &self,
+        signal_cli: &impl RpcClient,
+        alert_rx: &mut UnboundedReceiver<SignalAlertMessage>,
+    ) -> Result<(), RpcClientError> {
         self.update_trust(signal_cli).await;
 
-        let mut signal_alert_mq_rx = self
-            .signal_alert_mq_rx
-            .try_lock()
-            .expect("Mutex should not be contended");
         let mut signal_rx = signal_cli
             .subscribe_receive(Some(self.config.signal_account.clone()))
             .await?;
@@ -405,7 +424,7 @@ impl Gateway {
                     info!("Stop requested");
                     return Ok(());
                 },
-                outbound_admin_msg = signal_alert_mq_rx.recv() => {
+                outbound_admin_msg = alert_rx.recv() => {
                     if let Some(msg) = outbound_admin_msg {
                         info!("Sending alert: {}", msg.get_summary());
                         // Prepend origin line if present
@@ -435,7 +454,7 @@ impl Gateway {
                             attachments,
                         }.send(signal_cli).await?;
                     } else {
-                        warn!("signal_alert_mq_rx is closed, halting service");
+                        warn!("alert_rx is closed, halting service");
                         self.token.cancel();
                         return Ok(());
                     }
