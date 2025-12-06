@@ -33,7 +33,6 @@ use tokio_util::bytes::Buf;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
-mod circular_buffer;
 mod log_buffer;
 mod log_handler;
 use log_handler::{LogHandler, LogHandlerConfig};
