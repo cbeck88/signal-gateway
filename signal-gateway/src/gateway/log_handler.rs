@@ -157,10 +157,8 @@ impl LogHandler {
     }
 
     /// Consume a new log message from the given origin
-    pub async fn handle_log_message(&self, mut log_msg: LogMessage, origin: Origin) {
-        let ts_sec = *log_msg
-            .timestamp
-            .get_or_insert_with(|| Utc::now().timestamp());
+    pub async fn handle_log_message(&self, log_msg: LogMessage, origin: Origin) {
+        let ts_sec = log_msg.get_timestamp_or_fallback();
 
         let rate_limit_result = self.check_rate_limiters(&log_msg, &origin, ts_sec).await;
 
