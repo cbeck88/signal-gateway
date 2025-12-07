@@ -269,7 +269,7 @@ impl Origin {
 /// Filter criteria for matching log messages.
 ///
 /// All non-empty fields must match for the filter to pass.
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Default, Deserialize)]
 pub struct LogFilter {
     /// If non-empty, the message must contain this substring.
     #[serde(default)]
@@ -283,6 +283,25 @@ pub struct LogFilter {
     /// If non-empty, the line number must equal this value exactly.
     #[serde(default)]
     pub line_equals: String,
+}
+
+impl std::fmt::Debug for LogFilter {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut s = f.debug_struct("LogFilter");
+        if !self.msg_contains.is_empty() {
+            s.field("msg_contains", &self.msg_contains);
+        }
+        if !self.module_equals.is_empty() {
+            s.field("module_equals", &self.module_equals);
+        }
+        if !self.file_equals.is_empty() {
+            s.field("file_equals", &self.file_equals);
+        }
+        if !self.line_equals.is_empty() {
+            s.field("line_equals", &self.line_equals);
+        }
+        s.finish()
+    }
 }
 
 impl LogFilter {

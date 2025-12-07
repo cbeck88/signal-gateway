@@ -15,9 +15,15 @@ use std::str::FromStr;
 use tracing::{debug, info, warn};
 
 /// A validated Signal UUID in the format `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(try_from = "String")]
 pub struct Uuid(String);
+
+impl fmt::Debug for Uuid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
 
 impl FromStr for Uuid {
     type Err = String;
@@ -98,9 +104,15 @@ impl fmt::Display for Uuid {
 }
 
 /// A validated Signal safety number (60 digits, optionally separated by whitespace).
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Hash, Deserialize)]
 #[serde(try_from = "String")]
 pub struct SafetyNumber(String);
+
+impl fmt::Debug for SafetyNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.0, f)
+    }
+}
 
 impl FromStr for SafetyNumber {
     type Err = String;
@@ -175,9 +187,15 @@ impl fmt::Display for SafetyNumber {
 /// Can be deserialized from either:
 /// - A map of UUID -> safety numbers: `{"uuid1": ["12345..."], "uuid2": []}`
 /// - A sequence of UUIDs (no safety numbers): `["uuid1", "uuid2"]`
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct SignalTrustSet {
     map: HashMap<Uuid, Vec<SafetyNumber>>,
+}
+
+impl fmt::Debug for SignalTrustSet {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.map, f)
+    }
 }
 
 impl SignalTrustSet {
