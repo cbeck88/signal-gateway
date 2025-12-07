@@ -464,28 +464,38 @@ mod tests {
         assert!(UUID1.parse::<Uuid>().is_ok());
         assert!("not-a-uuid".parse::<Uuid>().is_err());
         assert!("12345678-1234-1234-1234-12345678".parse::<Uuid>().is_err()); // too short
-        assert!("12345678-1234-1234-1234-123456789abcdef".parse::<Uuid>().is_err()); // too long
-        assert!("12345678-1234-1234-1234-123456789xyz".parse::<Uuid>().is_err()); // non-hex
+        assert!(
+            "12345678-1234-1234-1234-123456789abcdef"
+                .parse::<Uuid>()
+                .is_err()
+        ); // too long
+        assert!(
+            "12345678-1234-1234-1234-123456789xyz"
+                .parse::<Uuid>()
+                .is_err()
+        ); // non-hex
     }
 
     #[test]
     fn test_safety_number_validation() {
         assert!(SAFETY1.parse::<SafetyNumber>().is_ok());
         // With whitespace (common format)
-        assert!("12345 67890 12345 67890 12345 67890 12345 67890 12345 67890 12345 67890"
-            .parse::<SafetyNumber>()
-            .is_ok());
+        assert!(
+            "12345 67890 12345 67890 12345 67890 12345 67890 12345 67890 12345 67890"
+                .parse::<SafetyNumber>()
+                .is_ok()
+        );
         assert!("12345".parse::<SafetyNumber>().is_err()); // too short
-        assert!("12345678901234567890123456789012345678901234567890123456789x"
-            .parse::<SafetyNumber>()
-            .is_err()); // non-digit
+        assert!(
+            "12345678901234567890123456789012345678901234567890123456789x"
+                .parse::<SafetyNumber>()
+                .is_err()
+        ); // non-digit
     }
 
     #[test]
     fn test_deserialize_map() {
-        let json = format!(
-            r#"{{"{UUID1}": ["{SAFETY1}", "{SAFETY2}"], "{UUID2}": []}}"#
-        );
+        let json = format!(r#"{{"{UUID1}": ["{SAFETY1}", "{SAFETY2}"], "{UUID2}": []}}"#);
         let trust_set: SignalTrustSet = serde_json::from_str(&json).unwrap();
 
         assert_eq!(trust_set.len(), 2);
