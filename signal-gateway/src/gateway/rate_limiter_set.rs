@@ -1,5 +1,6 @@
 //! Rate limiter set for managing per-route rate limiting.
 
+use super::evaluate_limiter_sequence;
 use crate::{
     concurrent_map::LazyMap,
     log_message::{LogFilter, LogMessage, Origin},
@@ -54,13 +55,9 @@ impl LimiterSet {
     pub fn evaluate(&self, log_msg: &LogMessage, origin: &Origin) -> LimitResult {
         // Check per-origin limiters
         let origin_result = self.limiters.get(origin, |origin_limiters| {
-            for (i, (filter, limiter)) in origin_limiters.iter().enumerate() {
-                // Only evaluate the limiter if the message matches the filter
-                if filter.matches(log_msg) && !limiter.evaluate(log_msg) {
-                    return Some(LimitResult::Limiter(i));
-                }
-            }
-            None
+            evaluate_limiter_sequence(origin_limiters, log_msg)
+                .err()
+                .map(LimitResult::Limiter)
         });
 
         if let Some(result) = origin_result {
@@ -68,11 +65,8 @@ impl LimiterSet {
         }
 
         // Check global limiters
-        for (i, (filter, limiter)) in self.global_limiters.iter().enumerate() {
-            // Only evaluate the limiter if the message matches the filter
-            if filter.matches(log_msg) && !limiter.evaluate(log_msg) {
-                return LimitResult::GlobalLimiter(i);
-            }
+        if let Err(i) = evaluate_limiter_sequence(&self.global_limiters, log_msg) {
+            return LimitResult::GlobalLimiter(i);
         }
 
         LimitResult::Passed

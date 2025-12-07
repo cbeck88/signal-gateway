@@ -5,10 +5,26 @@
 
 use super::LimiterSet;
 use crate::{
-    log_message::{Level, LogFilter},
+    log_message::{Level, LogFilter, LogMessage},
     rate_limiter::{Limiter, RateThreshold},
 };
 use serde::Deserialize;
+
+/// Evaluate a sequence of (filter, limiter) pairs against a log message.
+///
+/// Returns `Ok(())` if no limiter blocks the message.
+/// Returns `Err(index)` if the limiter at `index` blocked the message.
+pub fn evaluate_limiter_sequence(
+    seq: &[(LogFilter, Limiter)],
+    log_msg: &LogMessage,
+) -> Result<(), usize> {
+    for (i, (filter, limiter)) in seq.iter().enumerate() {
+        if filter.matches(log_msg) && !limiter.evaluate(log_msg) {
+            return Err(i);
+        }
+    }
+    Ok(())
+}
 
 /// A rate limit rule for suppressing repeated alerts.
 ///

@@ -1,5 +1,5 @@
 use super::{
-    LimitResult, Limiter, LimiterSet, SignalAlertMessage, Summary,
+    LimitResult, Limiter, LimiterSet, SignalAlertMessage, Summary, evaluate_limiter_sequence,
     log_buffer::LogBuffer,
     route::{Destination, Limit, Route},
 };
@@ -262,11 +262,8 @@ impl LogHandler {
         };
 
         // At least one route passed, now check overall limits
-        for (idx, (filter, limiter)) in self.overall_limits.iter().enumerate() {
-            // Only evaluate the limiter if the message matches the filter
-            if filter.matches(log_msg) && !limiter.evaluate(log_msg) {
-                return Err(SuppressionReason::Overall(LimitResult::OverallLimiter(idx)));
-            }
+        if let Err(i) = evaluate_limiter_sequence(&self.overall_limits, log_msg) {
+            return Err(SuppressionReason::Overall(LimitResult::OverallLimiter(i)));
         }
 
         // All checks passed
