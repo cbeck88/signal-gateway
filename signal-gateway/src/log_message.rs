@@ -358,10 +358,10 @@ impl LogFilter {
             return false;
         }
 
-        if let Some(regex) = &self.msg_regex {
-            if !regex.is_match(&log_msg.msg) {
-                return false;
-            }
+        if let Some(regex) = &self.msg_regex
+            && !regex.is_match(&log_msg.msg)
+        {
+            return false;
         }
 
         if !self.module_equals.is_empty() {

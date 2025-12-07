@@ -1,9 +1,12 @@
+use crate::claude::{Tool, ToolExecutor};
+use async_trait::async_trait;
 use conf::Conf;
 use prometheus_http_client::{
     AlertInfo, AlertsRequest, ExtractLabels, Labels, LabelsRequest, MetricVal, MetricValue,
     PromRequest, QueryRequest, ReqwestClient, SeriesRequest,
 };
 use std::error::Error;
+use std::fmt::Write;
 use tracing::info;
 
 type BoxError = Box<dyn Error + Send + Sync>;
@@ -227,4 +230,173 @@ fn parse_alert_expr(expr: &str) -> Result<(String, PlotThreshold), BoxError> {
     }
 
     Err("no comparator (< or >) found in expression".into())
+}
+
+// Tool definitions for Claude API integration
+
+fn query_tool() -> Tool {
+    Tool {
+        name: "prometheus_query",
+        description: "Query Prometheus for current metric values using PromQL. Returns the current value of metrics matching the query expression.",
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "A PromQL query expression (e.g., 'up', 'rate(http_requests_total[5m])', 'node_memory_MemFree_bytes / node_memory_MemTotal_bytes')"
+                }
+            },
+            "required": ["query"]
+        }),
+    }
+}
+
+fn series_tool() -> Tool {
+    Tool {
+        name: "prometheus_series",
+        description: "List all time series (metrics) matching the given label matchers. Returns metric names with all their label key-value pairs.",
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "matchers": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Label matchers to filter series (e.g., ['__name__=~\"http_.*\"', 'job=\"api\"']). Use __name__ to match metric names."
+                }
+            },
+            "required": ["matchers"]
+        }),
+    }
+}
+
+fn labels_tool() -> Tool {
+    Tool {
+        name: "prometheus_labels",
+        description: "List all label names that exist in Prometheus, optionally filtered by series matchers.",
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "matchers": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional label matchers to filter which series to consider (e.g., ['job=\"api\"']). If empty, returns all label names."
+                }
+            },
+            "required": []
+        }),
+    }
+}
+
+fn alerts_tool() -> Tool {
+    Tool {
+        name: "prometheus_alerts",
+        description: "List all current alerts from Prometheus, including their state (pending/firing), labels, and annotations.",
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {},
+            "required": []
+        }),
+    }
+}
+
+#[async_trait]
+impl ToolExecutor for Prometheus {
+    fn tools(&self) -> Vec<Tool> {
+        vec![query_tool(), series_tool(), labels_tool(), alerts_tool()]
+    }
+
+    async fn execute(&self, name: &str, input: &serde_json::Value) -> Result<String, String> {
+        match name {
+            "prometheus_query" => {
+                let query = input
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| "missing 'query' parameter".to_owned())?;
+
+                match self.oneoff_query(query.to_owned()).await {
+                    Ok((labels, values)) => {
+                        let mut result = format!(
+                            "Query: {}\nMetric: {} (common labels: {:?})\n",
+                            query, labels.name, labels.common_labels
+                        );
+                        for (sl, val) in labels.specific_labels.iter().zip(values.iter()) {
+                            let value_str = val
+                                .as_ref()
+                                .map(|(_, v)| v.to_string())
+                                .unwrap_or_else(|| "-".to_owned());
+                            writeln!(&mut result, "  {:?} = {}", sl, value_str).unwrap();
+                        }
+                        Ok(result)
+                    }
+                    Err(err) => Err(format!("prometheus query failed: {err}")),
+                }
+            }
+            "prometheus_series" => {
+                let matchers: Vec<String> = input
+                    .get("matchers")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_owned()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                match self.series(&matchers).await {
+                    Ok(series) => {
+                        let mut result = format!("Found {} series:\n", series.len());
+                        for labels in series.iter().take(100) {
+                            writeln!(&mut result, "  {:?}", labels).unwrap();
+                        }
+                        if series.len() > 100 {
+                            result.push_str(&format!("  ... and {} more\n", series.len() - 100));
+                        }
+                        Ok(result)
+                    }
+                    Err(err) => Err(format!("prometheus series failed: {err}")),
+                }
+            }
+            "prometheus_labels" => {
+                let matchers: Vec<String> = input
+                    .get("matchers")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(|s| s.to_owned()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                match self.labels(&matchers).await {
+                    Ok(labels) => {
+                        let mut result = format!("Found {} labels:\n", labels.len());
+                        for label in &labels {
+                            writeln!(&mut result, "  {}", label).unwrap();
+                        }
+                        Ok(result)
+                    }
+                    Err(err) => Err(format!("prometheus labels failed: {err}")),
+                }
+            }
+            "prometheus_alerts" => match self.alerts().await {
+                Ok(alerts) => {
+                    if alerts.is_empty() {
+                        return Ok("No active alerts".to_owned());
+                    }
+                    let mut result = format!("Found {} alerts:\n", alerts.len());
+                    for alert in &alerts {
+                        writeln!(
+                            &mut result,
+                            "  [{:?}] {:?} - {:?}",
+                            alert.state, alert.labels, alert.annotations
+                        )
+                        .unwrap();
+                    }
+                    Ok(result)
+                }
+                Err(err) => Err(format!("prometheus alerts failed: {err}")),
+            },
+            _ => Err(format!("unknown tool: {name}")),
+        }
+    }
 }

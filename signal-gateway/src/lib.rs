@@ -6,6 +6,7 @@
 #![deny(missing_docs)]
 
 pub mod alertmanager;
+pub mod claude;
 pub mod gateway;
 pub mod message_handler;
 

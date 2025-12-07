@@ -4,6 +4,7 @@
 use crate::signal_jsonrpc::connect_ipc;
 use crate::{
     alertmanager::AlertPost,
+    claude::{ClaudeApi, ClaudeConfig, Tool, ToolExecutor},
     log_message::{LogMessage, Origin},
     message_handler::{
         AdminMessage, AdminMessageResponse, Context, MessageHandler, MessageHandlerResult,
@@ -13,6 +14,7 @@ use crate::{
         Envelope, MessageTarget, RpcClient, RpcClientError, SignalMessage, connect_tcp,
     },
 };
+use async_trait::async_trait;
 use chrono::Utc;
 use conf::{Conf, Subcommands};
 use futures_util::FutureExt;
@@ -75,6 +77,9 @@ pub struct GatewayConfig {
     /// Log handler configuration for processing log messages.
     #[conf(flatten, prefix)]
     pub log_handler: LogHandlerConfig,
+    /// Claude API configuration for AI-powered responses.
+    #[conf(flatten, prefix)]
+    pub claude: Option<ClaudeConfig>,
 }
 
 /// Wrapper for parsing gateway commands
@@ -129,6 +134,13 @@ enum GatewayCommand {
     /// Show current alerts from prometheus
     #[conf(name = "alerts", alias = "ALERTS")]
     Alerts,
+    /// Ask Claude AI a question
+    #[conf(name = "c", alias = "C")]
+    Claude {
+        /// The prompt to send to Claude
+        #[conf(repeat, pos)]
+        prompt: Vec<String>,
+    },
 }
 
 /// Parse a gateway command from a string (with or without leading /)
@@ -217,6 +229,8 @@ pub struct Gateway {
     log_handler: LogHandler,
     /// Handler for admin messages that don't start with `/`
     message_handler: Option<Box<dyn MessageHandler>>,
+    /// Claude API client for AI-powered responses.
+    claude: Option<ClaudeApi>,
 }
 
 impl Gateway {
@@ -237,6 +251,11 @@ impl Gateway {
 
         let log_handler = LogHandler::new(config.log_handler.clone(), signal_alert_mq_tx.clone());
 
+        let claude = config
+            .claude
+            .clone()
+            .map(|cc| ClaudeApi::new(cc).expect("Invalid claude config"));
+
         Self {
             config,
             signal_alert_mq_tx,
@@ -245,6 +264,7 @@ impl Gateway {
             prometheus,
             log_handler,
             message_handler,
+            claude,
         }
     }
 
@@ -655,6 +675,19 @@ impl Gateway {
                     Err(err) => Err((500, err)),
                 }
             }
+            GatewayCommand::Claude { prompt } => {
+                let claude = self
+                    .claude
+                    .as_ref()
+                    .ok_or_else(|| (501u16, "claude was not configured".into()))?;
+
+                let prompt_text = prompt.join(" ");
+                // Pass self as the tool executor so Claude can query prometheus
+                match claude.request(&prompt_text, Some(self)).await {
+                    Ok(response) => Ok(AdminMessageResponse::new(response)),
+                    Err(err) => Err((500, err.to_string().into())),
+                }
+            }
         }
     }
 
@@ -770,6 +803,31 @@ impl Gateway {
         let log_msg = log_msg.into();
         let origin = Origin::from(&log_msg);
         self.log_handler.handle_log_message(log_msg, origin).await;
+    }
+}
+
+#[async_trait]
+impl ToolExecutor for Gateway {
+    fn tools(&self) -> Vec<Tool> {
+        let mut tools = self.log_handler.tools();
+        if let Some(prometheus) = &self.prometheus {
+            tools.extend(prometheus.tools());
+        }
+        tools
+    }
+
+    async fn execute(&self, name: &str, input: &serde_json::Value) -> Result<String, String> {
+        if self.log_handler.has_tool(name) {
+            return self.log_handler.execute(name, input).await;
+        }
+
+        if let Some(prometheus) = &self.prometheus
+            && prometheus.has_tool(name)
+        {
+            return prometheus.execute(name, input).await;
+        }
+
+        Err(format!("unknown tool: {name}"))
     }
 }
 

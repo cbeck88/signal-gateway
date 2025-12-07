@@ -4,10 +4,12 @@ use super::{
     route::{Destination, Limit, Route},
 };
 use crate::{
+    claude::{Tool, ToolExecutor},
     concurrent_map::LazyMap,
     log_format::LogFormatConfig,
     log_message::{LogFilter, LogMessage, Origin},
 };
+use async_trait::async_trait;
 use chrono::Utc;
 use conf::Conf;
 use std::fmt;
@@ -280,5 +282,39 @@ impl LogHandler {
 
         // All checks passed
         Ok(first_destination)
+    }
+}
+
+fn logs_tool() -> Tool {
+    Tool {
+        name: "logs",
+        description: "Get recent log messages from monitored applications. Returns buffered log entries, optionally filtered by application name or hostname.",
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "string",
+                    "description": "Optional filter string. If it contains '@', format is 'app@host' where both parts are substring matches. Otherwise, matches either app or host containing the string."
+                }
+            },
+            "required": []
+        }),
+    }
+}
+
+#[async_trait]
+impl ToolExecutor for LogHandler {
+    fn tools(&self) -> Vec<Tool> {
+        vec![logs_tool()]
+    }
+
+    async fn execute(&self, name: &str, input: &serde_json::Value) -> Result<String, String> {
+        match name {
+            "logs" => {
+                let filter = input.get("filter").and_then(|v| v.as_str());
+                Ok(self.format_logs(filter).await)
+            }
+            _ => Err(format!("unknown tool: {name}")),
+        }
     }
 }

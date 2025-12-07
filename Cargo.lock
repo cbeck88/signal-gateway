@@ -1681,6 +1681,7 @@ dependencies = [
  "prometheus-http-client",
  "rand",
  "regex",
+ "reqwest",
  "serde",
  "serde_json",
  "thiserror",
