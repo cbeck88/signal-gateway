@@ -54,6 +54,10 @@ pub struct LogHandlerConfig {
     /// Number of recent log messages to buffer per origin
     #[conf(long, env, default_value = "64")]
     pub log_buffer_size: usize,
+    /// Debug logging level for suppressed messages.
+    /// 0 = no logging, 1 = log only overall limiter, 2 = log routes + overall, 3 = log all.
+    #[conf(long, env, default_value = "0")]
+    pub debug_suppressions: u16,
     /// Log message formatting options.
     #[conf(flatten)]
     pub log_format: LogFormatConfig,
@@ -161,8 +165,16 @@ impl LogHandler {
         let rate_limit_result = self.check_rate_limiters(&log_msg, &origin).await;
 
         if let Err(reason) = &rate_limit_result {
-            let sev = log_msg.level.to_str();
-            info!("Suppressed {sev} ({reason}):\n{}", log_msg.msg);
+            let should_log = match self.config.debug_suppressions {
+                0 => false,
+                1 => matches!(reason, SuppressionReason::OverallLimiter(_)),
+                2 => !matches!(reason, SuppressionReason::NoRoutes),
+                _ => true,
+            };
+            if should_log {
+                let sev = log_msg.level.to_str();
+                info!("Suppressed {sev} ({reason}):\n{}", log_msg.msg);
+            }
         }
 
         // Get or create the buffer for this origin, then record the message
