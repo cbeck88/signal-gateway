@@ -7,6 +7,7 @@ use conf::Conf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
+use std::sync::Weak;
 use tracing::info;
 
 /// The Anthropic API version header value. This is a stable version identifier,
@@ -60,6 +61,9 @@ pub enum ClaudeError {
     /// Too many tool use iterations.
     #[error("exceeded maximum tool use iterations ({0})")]
     TooManyIterations(u32),
+    /// Tool executor is no longer available.
+    #[error("tool executor is gone")]
+    ToolExecutorGone,
 }
 
 /// Claude API client.
@@ -68,6 +72,7 @@ pub struct ClaudeApi {
     client: reqwest::Client,
     api_key: String,
     system_prompt: String,
+    tool_executor: Weak<dyn ToolExecutor>,
 }
 
 /// Request body for the Claude Messages API.
@@ -159,7 +164,13 @@ impl ClaudeApi {
     /// Create a new Claude API client from configuration.
     ///
     /// Reads the API key and system prompt from the configured files.
-    pub fn new(config: ClaudeConfig) -> Result<Self, ClaudeError> {
+    /// The tool executor is held as a weak reference, so it will not prevent
+    /// the executor from being dropped. If the executor is dropped during a
+    /// request, tool use will fail with `ToolExecutorGone`.
+    pub fn new(
+        config: ClaudeConfig,
+        tool_executor: Weak<dyn ToolExecutor>,
+    ) -> Result<Self, ClaudeError> {
         let api_key = std::fs::read_to_string(&config.api_key_file)
             .map_err(ClaudeError::ApiKeyRead)?
             .trim()
@@ -175,19 +186,21 @@ impl ClaudeApi {
             client,
             api_key,
             system_prompt,
+            tool_executor,
         })
     }
 
     /// Send a request to the Claude API and return the response text.
-    /// If a tool executor is provided, handles tool use in a loop.
-    pub async fn request(
-        &self,
-        prompt: &str,
-        tool_executor: Option<&dyn ToolExecutor>,
-    ) -> Result<String, ClaudeError> {
+    /// If a tool executor has been installed, handles tool use in a loop.
+    pub async fn request(&self, prompt: &str) -> Result<String, ClaudeError> {
         let max_iterations = self.config.claude_max_iterations;
 
-        let tools = tool_executor.map(|te| te.tools()).unwrap_or_default();
+        // Get tools from the executor if still alive
+        let executor = self.tool_executor.upgrade();
+        let tools = executor
+            .as_ref()
+            .map(|te| te.tools())
+            .unwrap_or_default();
         let mut messages = vec![MessageContent::user(prompt)];
 
         info!("Claude request: {}", prompt);
@@ -224,10 +237,9 @@ impl ClaudeApi {
 
             // Check if we need to handle tool use
             if response.stop_reason == "tool_use" {
-                let Some(executor) = tool_executor else {
-                    return Err(ClaudeError::ToolError(
-                        "tool use requested but no executor provided".to_owned(),
-                    ));
+                // Try to get a strong reference to the executor
+                let Some(executor) = self.tool_executor.upgrade() else {
+                    return Err(ClaudeError::ToolExecutorGone);
                 };
 
                 // Add assistant's response to messages

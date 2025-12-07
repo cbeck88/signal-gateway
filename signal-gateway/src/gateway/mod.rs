@@ -22,7 +22,7 @@ use http::{Method, Request, Response, StatusCode};
 use http_body::Body;
 use http_body_util::BodyExt;
 use prometheus_http_client::{AlertStatus, ExtractLabels};
-use std::{fmt::Write, net::SocketAddr, path::PathBuf, sync::Arc, sync::Mutex, time::Duration};
+use std::{fmt::Write, net::SocketAddr, path::PathBuf, sync::Arc, sync::Mutex, sync::OnceLock, sync::Weak, time::Duration};
 use tokio::{
     join,
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
@@ -230,7 +230,8 @@ pub struct Gateway {
     /// Handler for admin messages that don't start with `/`
     message_handler: Option<Box<dyn MessageHandler>>,
     /// Claude API client for AI-powered responses.
-    claude: Option<ClaudeApi>,
+    /// Initialized after Arc creation so it can hold a weak reference back to Gateway.
+    claude: OnceLock<Box<ClaudeApi>>,
 }
 
 impl Gateway {
@@ -251,12 +252,9 @@ impl Gateway {
 
         let log_handler = LogHandler::new(config.log_handler.clone(), signal_alert_mq_tx.clone());
 
-        let claude = config
-            .claude
-            .clone()
-            .map(|cc| ClaudeApi::new(cc).expect("Invalid claude config"));
+        let claude_config = config.claude.clone();
 
-        Arc::new(Self {
+        let gateway = Arc::new(Self {
             config,
             signal_alert_mq_tx,
             signal_alert_mq_rx: Mutex::new(Some(signal_alert_mq_rx)),
@@ -264,8 +262,20 @@ impl Gateway {
             prometheus,
             log_handler,
             message_handler,
-            claude,
-        })
+            claude: OnceLock::new(),
+        });
+
+        // Initialize Claude with a weak reference back to the gateway
+        if let Some(cc) = claude_config {
+            let claude = ClaudeApi::new(cc, Arc::downgrade(&gateway) as Weak<dyn ToolExecutor>)
+                .expect("Invalid claude config");
+            gateway
+                .claude
+                .set(Box::new(claude))
+                .unwrap_or_else(|_| panic!("claude OnceLock was already set"));
+        }
+
+        gateway
     }
 
     /// Run the gateway main loop, reconnecting to signal-cli on errors.
@@ -678,12 +688,11 @@ impl Gateway {
             GatewayCommand::Claude { prompt } => {
                 let claude = self
                     .claude
-                    .as_ref()
+                    .get()
                     .ok_or_else(|| (501u16, "claude was not configured".into()))?;
 
                 let prompt_text = prompt.join(" ");
-                // Pass self as the tool executor so Claude can query prometheus
-                match claude.request(&prompt_text, Some(self)).await {
+                match claude.request(&prompt_text).await {
                     Ok(response) => Ok(AdminMessageResponse::new(response)),
                     Err(err) => Err((500, err.to_string().into())),
                 }
