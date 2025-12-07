@@ -1,6 +1,6 @@
 //! Log message schema and types.
 
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use serde::{Deserialize, de};
 
 /// Log severity level, following syslog conventions.
@@ -99,8 +99,10 @@ pub struct LogMessage {
     pub timestamp: Option<i64>,
     /// Nanosecond component of the timestamp.
     pub timestamp_nanos: u32,
-    /// When this message was collected by the gateway.
-    pub collected_at: DateTime<Utc>,
+    /// Unix timestamp in seconds when this message was collected by the gateway.
+    pub collected_at_timestamp: i64,
+    /// Nanosecond component of the collection timestamp.
+    pub collected_at_timestamp_nanos: u32,
     /// Hostname where the log originated.
     pub hostname: Option<Box<str>>,
     /// Application name that generated the log.
@@ -134,8 +136,7 @@ impl LogMessage {
     /// Get the timestamp in seconds, using the source timestamp if available,
     /// otherwise falling back to the collection time.
     pub fn get_timestamp_or_fallback(&self) -> i64 {
-        self.timestamp
-            .unwrap_or_else(|| self.collected_at.timestamp())
+        self.timestamp.unwrap_or(self.collected_at_timestamp)
     }
 }
 
@@ -198,11 +199,13 @@ impl LogMessageBuilder {
 
     /// Build the log message.
     pub fn build(self) -> LogMessage {
+        let now = Utc::now();
         LogMessage {
             level: self.level,
             timestamp: self.timestamp,
             timestamp_nanos: self.timestamp_nanos,
-            collected_at: Utc::now(),
+            collected_at_timestamp: now.timestamp(),
+            collected_at_timestamp_nanos: now.timestamp_subsec_nanos(),
             hostname: self.hostname,
             appname: self.appname,
             msg: self.msg,
