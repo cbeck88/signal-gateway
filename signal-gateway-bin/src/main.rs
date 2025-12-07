@@ -113,7 +113,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let message_handler = config.admin_handler.map(|cmd| match cmd {
         AdminHandlerCommand::AdminHttp(config) => config.into_handler(),
     });
-    let gateway = Arc::new(Gateway::new(config.gateway, token.clone(), message_handler).await);
+    let gateway = Gateway::new(config.gateway, token.clone(), message_handler).await;
 
     let listener = TcpListener::bind(config.http_listen_addr).await.unwrap();
     info!("Listening for http on {}", config.http_listen_addr);

@@ -22,7 +22,7 @@ use http::{Method, Request, Response, StatusCode};
 use http_body::Body;
 use http_body_util::BodyExt;
 use prometheus_http_client::{AlertStatus, ExtractLabels};
-use std::{fmt::Write, net::SocketAddr, path::PathBuf, sync::Mutex, time::Duration};
+use std::{fmt::Write, net::SocketAddr, path::PathBuf, sync::Arc, sync::Mutex, time::Duration};
 use tokio::{
     join,
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
@@ -239,7 +239,7 @@ impl Gateway {
         config: GatewayConfig,
         token: CancellationToken,
         message_handler: Option<Box<dyn MessageHandler>>,
-    ) -> Self {
+    ) -> Arc<Self> {
         let (signal_alert_mq_tx, signal_alert_mq_rx) = unbounded_channel();
 
         let prometheus = config
@@ -256,7 +256,7 @@ impl Gateway {
             .clone()
             .map(|cc| ClaudeApi::new(cc).expect("Invalid claude config"));
 
-        Self {
+        Arc::new(Self {
             config,
             signal_alert_mq_tx,
             signal_alert_mq_rx: Mutex::new(Some(signal_alert_mq_rx)),
@@ -265,7 +265,7 @@ impl Gateway {
             log_handler,
             message_handler,
             claude,
-        }
+        })
     }
 
     /// Run the gateway main loop, reconnecting to signal-cli on errors.
