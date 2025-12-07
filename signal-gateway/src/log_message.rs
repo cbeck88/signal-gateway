@@ -266,6 +266,35 @@ impl Origin {
     }
 }
 
+/// A compiled regex that can be cloned and deserialized.
+#[derive(Clone)]
+pub struct CompiledRegex(regex::Regex);
+
+impl CompiledRegex {
+    /// Check if the regex matches the given text.
+    pub fn is_match(&self, text: &str) -> bool {
+        self.0.is_match(text)
+    }
+}
+
+impl std::fmt::Debug for CompiledRegex {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "/{}/", self.0.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for CompiledRegex {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let pattern = String::deserialize(deserializer)?;
+        regex::Regex::new(&pattern)
+            .map(CompiledRegex)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
 /// Filter criteria for matching log messages.
 ///
 /// All non-empty fields must match for the filter to pass.
@@ -274,6 +303,12 @@ pub struct LogFilter {
     /// If non-empty, the message must contain this substring.
     #[serde(default)]
     pub msg_contains: String,
+    /// If non-empty, the message must equal this value exactly.
+    #[serde(default)]
+    pub msg_equals: String,
+    /// If set, the message must match this regex.
+    #[serde(default)]
+    pub msg_regex: Option<CompiledRegex>,
     /// If non-empty, the module path must equal this value exactly.
     #[serde(default)]
     pub module_equals: String,
@@ -290,6 +325,12 @@ impl std::fmt::Debug for LogFilter {
         let mut s = f.debug_struct("LogFilter");
         if !self.msg_contains.is_empty() {
             s.field("msg_contains", &self.msg_contains);
+        }
+        if !self.msg_equals.is_empty() {
+            s.field("msg_equals", &self.msg_equals);
+        }
+        if let Some(regex) = &self.msg_regex {
+            s.field("msg_regex", regex);
         }
         if !self.module_equals.is_empty() {
             s.field("module_equals", &self.module_equals);
@@ -311,6 +352,16 @@ impl LogFilter {
     pub fn matches(&self, log_msg: &LogMessage) -> bool {
         if !self.msg_contains.is_empty() && !log_msg.msg.contains(&self.msg_contains) {
             return false;
+        }
+
+        if !self.msg_equals.is_empty() && *log_msg.msg != *self.msg_equals {
+            return false;
+        }
+
+        if let Some(regex) = &self.msg_regex {
+            if !regex.is_match(&log_msg.msg) {
+                return false;
+            }
         }
 
         if !self.module_equals.is_empty() {
@@ -390,5 +441,71 @@ mod tests {
         };
         assert!(origin2.matches_filter("app@host"));
         assert!(!origin2.matches_filter("app@other"));
+    }
+
+    fn make_log_msg(msg: &str) -> LogMessage {
+        LogMessage::builder(Level::ERROR, msg)
+            .module_path("test::module")
+            .file("test.rs")
+            .line("42")
+            .build()
+    }
+
+    #[test]
+    fn test_log_filter_msg_contains() {
+        let filter: LogFilter = serde_json::from_str(r#"{"msg_contains": "error"}"#).unwrap();
+        assert!(filter.matches(&make_log_msg("an error occurred")));
+        assert!(filter.matches(&make_log_msg("error")));
+        assert!(!filter.matches(&make_log_msg("warning message")));
+    }
+
+    #[test]
+    fn test_log_filter_msg_equals() {
+        let filter: LogFilter = serde_json::from_str(r#"{"msg_equals": "exact match"}"#).unwrap();
+        assert!(filter.matches(&make_log_msg("exact match")));
+        assert!(!filter.matches(&make_log_msg("exact match with extra")));
+        assert!(!filter.matches(&make_log_msg("not exact match")));
+    }
+
+    #[test]
+    fn test_log_filter_msg_regex() {
+        let filter: LogFilter = serde_json::from_str(r#"{"msg_regex": "error \\d+"}"#).unwrap();
+        assert!(filter.matches(&make_log_msg("error 123")));
+        assert!(filter.matches(&make_log_msg("an error 456 occurred")));
+        assert!(!filter.matches(&make_log_msg("error")));
+        assert!(!filter.matches(&make_log_msg("warning 123")));
+    }
+
+    #[test]
+    fn test_log_filter_combined() {
+        // msg_contains AND module_equals must both match
+        let filter: LogFilter = serde_json::from_str(
+            r#"{"msg_contains": "error", "module_equals": "test::module"}"#,
+        )
+        .unwrap();
+        assert!(filter.matches(&make_log_msg("an error occurred")));
+
+        // Wrong module
+        let mut msg = make_log_msg("an error occurred");
+        msg.module_path = Some("other::module".into());
+        assert!(!filter.matches(&msg));
+
+        // Wrong message
+        let msg2 = make_log_msg("warning message");
+        assert!(!filter.matches(&msg2));
+    }
+
+    #[test]
+    fn test_log_filter_empty_matches_all() {
+        let filter: LogFilter = serde_json::from_str(r#"{}"#).unwrap();
+        assert!(filter.matches(&make_log_msg("anything")));
+        assert!(filter.matches(&make_log_msg("")));
+    }
+
+    #[test]
+    fn test_compiled_regex_debug() {
+        let filter: LogFilter = serde_json::from_str(r#"{"msg_regex": "test.*pattern"}"#).unwrap();
+        let debug_str = format!("{:?}", filter);
+        assert!(debug_str.contains("/test.*pattern/"));
     }
 }
