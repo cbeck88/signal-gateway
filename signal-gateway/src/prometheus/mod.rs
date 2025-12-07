@@ -108,8 +108,15 @@ impl Prometheus {
         self.config.plot.purge_old_plots();
     }
 
-    /// Create a new plot corresponding to a given alert. Returns a pathbuf if it is present
-    pub async fn create_alert_plot(&self, alert: &Alert) -> Result<PathBuf, BoxError> {
+    /// Create a new plot corresponding to a given alert. Returns a pathbuf if it is present.
+    ///
+    /// If `add_label_selector` is true, appends alert labels as a label selector to the query.
+    /// This only works for simple metric queries, not for function calls like `rate(...)`.
+    pub async fn create_alert_plot(
+        &self,
+        alert: &Alert,
+        add_label_selector: bool,
+    ) -> Result<PathBuf, BoxError> {
         use chrono::{TimeDelta, Utc};
 
         let expr = alert.parse_expr_from_generator_url()?;
@@ -118,12 +125,16 @@ impl Prometheus {
         // We look for comparison operators and extract the threshold
         let (base_query, threshold) = parse_alert_expr(&expr)?;
 
-        // Build label selector from alert labels (excluding job/instance)
-        let label_selector = build_label_selector(&alert.labels, &[]);
-        let query = if label_selector.is_empty() {
-            base_query.to_owned()
+        // Optionally add label selector from alert labels
+        let query = if add_label_selector {
+            let label_selector = build_label_selector(&alert.labels, &[]);
+            if label_selector.is_empty() {
+                base_query
+            } else {
+                format!("{base_query}{{{label_selector}}}")
+            }
         } else {
-            format!("{base_query}{{{label_selector}}}")
+            base_query
         };
 
         let now = Utc::now();

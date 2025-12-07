@@ -680,7 +680,7 @@ impl Gateway {
         if let Some(prometheus) = self.prometheus.as_ref() {
             prometheus.purge_old_plots();
             for alert in alert_msg.alerts.iter() {
-                match prometheus.create_alert_plot(alert).await {
+                match prometheus.create_alert_plot(alert, false).await {
                     Ok(path) => {
                         attachment_paths.push(path);
                     }
