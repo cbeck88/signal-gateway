@@ -15,6 +15,12 @@ use tracing_subscriber::EnvFilter;
 mod admin_http;
 use admin_http::AdminHttpConfig;
 
+mod syslog;
+use syslog::SyslogConfig;
+
+pub mod json;
+use json::JsonConfig;
+
 /// Handler for admin messages that don't match built-in commands.
 #[derive(Subcommands, Debug)]
 #[conf(serde)]
@@ -22,12 +28,6 @@ pub enum AdminHandlerCommand {
     /// Forward unhandled admin messages to an HTTP endpoint.
     AdminHttp(AdminHttpConfig),
 }
-
-mod syslog;
-use syslog::SyslogConfig;
-
-pub mod json;
-use json::JsonConfig;
 
 /// Top-level configuration for signal-gateway.
 #[derive(Conf, Debug)]
