@@ -347,7 +347,7 @@ impl Gateway {
                                 if let Some(group_id) = &self.config.alert_group_id {
                                     MessageTarget::Group(group_id.clone())
                                 } else {
-                                    MessageTarget::Recipients(self.config.signal_admins.uuids().cloned().collect())
+                                    MessageTarget::Recipients(self.config.signal_admins.uuids().map(str::to_owned).collect())
                                 }
                             }
                         };

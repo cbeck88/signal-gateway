@@ -7,9 +7,168 @@
 use crate::signal_jsonrpc::{Envelope, Identity, RpcClient};
 use serde::de::{MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Deserializer};
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt;
+use std::ops::Deref;
+use std::str::FromStr;
 use tracing::{debug, info, warn};
+
+/// A validated Signal UUID in the format `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[serde(try_from = "String")]
+pub struct Uuid(String);
+
+impl FromStr for Uuid {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // UUID format: 8-4-4-4-12 hex chars (36 chars total with dashes)
+        if s.len() != 36 {
+            return Err(format!("UUID must be 36 characters, got {}", s.len()));
+        }
+
+        let parts: Vec<&str> = s.split('-').collect();
+        if parts.len() != 5 {
+            return Err(format!(
+                "UUID must have 5 dash-separated parts, got {}",
+                parts.len()
+            ));
+        }
+
+        let expected_lens = [8, 4, 4, 4, 12];
+        for (i, (part, &expected)) in parts.iter().zip(&expected_lens).enumerate() {
+            if part.len() != expected {
+                return Err(format!(
+                    "UUID part {} has wrong length: expected {}, got {}",
+                    i + 1,
+                    expected,
+                    part.len()
+                ));
+            }
+            if !part.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(format!("UUID part {} contains non-hex characters", i + 1));
+            }
+        }
+
+        Ok(Uuid(s.to_owned()))
+    }
+}
+
+impl TryFrom<String> for Uuid {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+impl TryFrom<&str> for Uuid {
+    type Error = String;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+impl Deref for Uuid {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<str> for Uuid {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<str> for Uuid {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for Uuid {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+/// A validated Signal safety number (60 digits, optionally separated by whitespace).
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Deserialize)]
+#[serde(try_from = "String")]
+pub struct SafetyNumber(String);
+
+impl FromStr for SafetyNumber {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // Safety number format: 60 digits, optionally grouped with whitespace
+        let mut digit_count = 0;
+        for c in s.chars() {
+            if c.is_ascii_digit() {
+                digit_count += 1;
+            } else if !c.is_whitespace() {
+                return Err(format!(
+                    "Safety number must contain only digits and whitespace, found '{c}'"
+                ));
+            }
+        }
+
+        if digit_count != 60 {
+            return Err(format!(
+                "Safety number must contain exactly 60 digits, got {digit_count}"
+            ));
+        }
+
+        Ok(SafetyNumber(s.to_owned()))
+    }
+}
+
+impl TryFrom<String> for SafetyNumber {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+impl TryFrom<&str> for SafetyNumber {
+    type Error = String;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
+impl Deref for SafetyNumber {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl AsRef<str> for SafetyNumber {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Borrow<str> for SafetyNumber {
+    fn borrow(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for SafetyNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
 
 /// A set of Signal UUIDs with optional safety numbers for trust verification.
 ///
@@ -18,7 +177,7 @@ use tracing::{debug, info, warn};
 /// - A sequence of UUIDs (no safety numbers): `["uuid1", "uuid2"]`
 #[derive(Clone, Debug, Default)]
 pub struct SignalTrustSet {
-    map: HashMap<String, Vec<String>>,
+    map: HashMap<Uuid, Vec<SafetyNumber>>,
 }
 
 impl SignalTrustSet {
@@ -32,12 +191,12 @@ impl SignalTrustSet {
     /// Currently checks if the source UUID is in the trust set.
     /// Will eventually also verify safety numbers.
     pub fn is_trusted(&self, envelope: &Envelope) -> bool {
-        self.map.contains_key(&envelope.source_uuid)
+        self.map.contains_key(envelope.source_uuid.as_str())
     }
 
-    /// Get all UUIDs as an iterator.
-    pub fn uuids(&self) -> impl Iterator<Item = &String> {
-        self.map.keys()
+    /// Get all UUIDs as an iterator of string slices.
+    pub fn uuids(&self) -> impl Iterator<Item = &str> {
+        self.map.keys().map(|u| u.as_ref())
     }
 
     /// Get the number of admin UUIDs.
@@ -51,12 +210,12 @@ impl SignalTrustSet {
     }
 
     /// Iterate over UUID and safety number pairs.
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &Vec<String>)> {
+    pub fn iter(&self) -> impl Iterator<Item = (&Uuid, &Vec<SafetyNumber>)> {
         self.map.iter()
     }
 
     /// Get safety numbers for a specific UUID.
-    pub fn get(&self, uuid: &str) -> Option<&Vec<String>> {
+    pub fn get(&self, uuid: &str) -> Option<&Vec<SafetyNumber>> {
         self.map.get(uuid)
     }
 
@@ -80,9 +239,12 @@ impl SignalTrustSet {
                 continue;
             }
 
+            // Helper to check if a safety number string is in our configured list
+            let is_configured = |sn: &str| safety_numbers.iter().any(|s| s.as_ref() == sn);
+
             // Get current identities from signal-cli
             let current_identities: Vec<Identity> = match signal_cli
-                .list_identities(Some(signal_account.to_owned()), Some(uuid.clone()))
+                .list_identities(Some(signal_account.to_owned()), Some(uuid.to_string()))
                 .await
             {
                 Ok(value) => serde_json::from_value(value).unwrap_or_default(),
@@ -93,14 +255,14 @@ impl SignalTrustSet {
             };
 
             // Check if any trusted identity in signal-cli is NOT in our config
-            let has_revoked_identity = current_identities.iter().any(|id| {
-                id.trust_level.is_trusted() && !safety_numbers.contains(&id.safety_number)
-            });
+            let has_revoked_identity = current_identities
+                .iter()
+                .any(|id| id.trust_level.is_trusted() && !is_configured(&id.safety_number));
 
             if has_revoked_identity {
                 // Log which identities are being revoked
                 for id in &current_identities {
-                    if id.trust_level.is_trusted() && !safety_numbers.contains(&id.safety_number) {
+                    if id.trust_level.is_trusted() && !is_configured(&id.safety_number) {
                         warn!(
                             "Revoking trust for {uuid}: safety number {} is trusted in signal-cli but not in config",
                             id.safety_number
@@ -113,7 +275,7 @@ impl SignalTrustSet {
                 signal_cli
                     .remove_contact(
                         Some(signal_account.to_owned()),
-                        uuid.clone(),
+                        uuid.to_string(),
                         true,  // forget - delete identity keys and sessions
                         false, // hide
                     )
@@ -126,9 +288,9 @@ impl SignalTrustSet {
                     signal_cli
                         .trust(
                             Some(signal_account.to_owned()),
-                            uuid.clone(),
+                            uuid.to_string(),
                             false,
-                            Some(safety_number.clone()),
+                            Some(safety_number.to_string()),
                         )
                         .await
                         .map_err(|err| format!("Failed to trust {uuid}: {err}"))?;
@@ -136,7 +298,7 @@ impl SignalTrustSet {
 
                 // Verify the reset worked correctly
                 let new_identities: Vec<Identity> = signal_cli
-                    .list_identities(Some(signal_account.to_owned()), Some(uuid.clone()))
+                    .list_identities(Some(signal_account.to_owned()), Some(uuid.to_string()))
                     .await
                     .map_err(|err| format!("Failed to verify trust reset for {uuid}: {err}"))
                     .and_then(|value| {
@@ -144,15 +306,15 @@ impl SignalTrustSet {
                             .map_err(|err| format!("Failed to parse identities for {uuid}: {err}"))
                     })?;
 
-                let trusted_now: Vec<_> = new_identities
+                let trusted_now: Vec<&str> = new_identities
                     .iter()
                     .filter(|id| id.trust_level.is_trusted())
-                    .map(|id| &id.safety_number)
+                    .map(|id| id.safety_number.as_str())
                     .collect();
 
                 // Check all configured safety numbers are now trusted
                 for safety_number in safety_numbers {
-                    if !trusted_now.contains(&safety_number) {
+                    if !trusted_now.contains(&safety_number.as_ref()) {
                         return Err(format!(
                             "Verification failed for {uuid}: safety number {} should be trusted but isn't",
                             safety_number
@@ -162,7 +324,7 @@ impl SignalTrustSet {
 
                 // Check no unexpected safety numbers are trusted
                 for sn in &trusted_now {
-                    if !safety_numbers.contains(sn) {
+                    if !is_configured(sn) {
                         return Err(format!(
                             "Verification failed for {uuid}: safety number {} is trusted but not in config",
                             sn
@@ -176,21 +338,21 @@ impl SignalTrustSet {
                 );
             } else {
                 // Just add any new safety numbers that aren't already trusted
-                let already_trusted: Vec<_> = current_identities
+                let already_trusted: Vec<&str> = current_identities
                     .iter()
                     .filter(|id| id.trust_level.is_trusted())
-                    .map(|id| &id.safety_number)
+                    .map(|id| id.safety_number.as_str())
                     .collect();
 
                 for safety_number in safety_numbers {
-                    if !already_trusted.contains(&safety_number) {
+                    if !already_trusted.contains(&safety_number.as_ref()) {
                         info!("Trusting new safety number for {uuid}");
                         signal_cli
                             .trust(
                                 Some(signal_account.to_owned()),
-                                uuid.clone(),
+                                uuid.to_string(),
                                 false,
-                                Some(safety_number.clone()),
+                                Some(safety_number.to_string()),
                             )
                             .await
                             .map_err(|err| format!("Failed to trust {uuid}: {err}"))?;
@@ -226,7 +388,7 @@ impl<'de> Visitor<'de> for SignalTrustSetVisitor {
         M: MapAccess<'de>,
     {
         let mut map = HashMap::with_capacity(access.size_hint().unwrap_or(0));
-        while let Some((key, value)) = access.next_entry::<String, Vec<String>>()? {
+        while let Some((key, value)) = access.next_entry::<Uuid, Vec<SafetyNumber>>()? {
             map.insert(key, value);
         }
         Ok(SignalTrustSet { map })
@@ -237,23 +399,23 @@ impl<'de> Visitor<'de> for SignalTrustSetVisitor {
         S: SeqAccess<'de>,
     {
         let mut map = HashMap::with_capacity(access.size_hint().unwrap_or(0));
-        while let Some(uuid) = access.next_element::<String>()? {
+        while let Some(uuid) = access.next_element::<Uuid>()? {
             map.insert(uuid, Vec::new());
         }
         Ok(SignalTrustSet { map })
     }
 }
 
-impl FromIterator<String> for SignalTrustSet {
-    fn from_iter<I: IntoIterator<Item = String>>(iter: I) -> Self {
+impl FromIterator<Uuid> for SignalTrustSet {
+    fn from_iter<I: IntoIterator<Item = Uuid>>(iter: I) -> Self {
         Self {
             map: iter.into_iter().map(|uuid| (uuid, Vec::new())).collect(),
         }
     }
 }
 
-impl FromIterator<(String, Vec<String>)> for SignalTrustSet {
-    fn from_iter<I: IntoIterator<Item = (String, Vec<String>)>>(iter: I) -> Self {
+impl FromIterator<(Uuid, Vec<SafetyNumber>)> for SignalTrustSet {
+    fn from_iter<I: IntoIterator<Item = (Uuid, Vec<SafetyNumber>)>>(iter: I) -> Self {
         Self {
             map: iter.into_iter().collect(),
         }
@@ -261,8 +423,8 @@ impl FromIterator<(String, Vec<String>)> for SignalTrustSet {
 }
 
 impl<'a> IntoIterator for &'a SignalTrustSet {
-    type Item = (&'a String, &'a Vec<String>);
-    type IntoIter = std::collections::hash_map::Iter<'a, String, Vec<String>>;
+    type Item = (&'a Uuid, &'a Vec<SafetyNumber>);
+    type IntoIter = std::collections::hash_map::Iter<'a, Uuid, Vec<SafetyNumber>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.map.iter()
@@ -273,31 +435,61 @@ impl<'a> IntoIterator for &'a SignalTrustSet {
 mod tests {
     use super::*;
 
+    const UUID1: &str = "12345678-1234-1234-1234-123456789abc";
+    const UUID2: &str = "abcdef12-abcd-abcd-abcd-abcdef123456";
+    const UUID3: &str = "00000000-0000-0000-0000-000000000000";
+    const SAFETY1: &str = "123456789012345678901234567890123456789012345678901234567890";
+    const SAFETY2: &str = "098765432109876543210987654321098765432109876543210987654321";
+
+    #[test]
+    fn test_uuid_validation() {
+        assert!(UUID1.parse::<Uuid>().is_ok());
+        assert!("not-a-uuid".parse::<Uuid>().is_err());
+        assert!("12345678-1234-1234-1234-12345678".parse::<Uuid>().is_err()); // too short
+        assert!("12345678-1234-1234-1234-123456789abcdef".parse::<Uuid>().is_err()); // too long
+        assert!("12345678-1234-1234-1234-123456789xyz".parse::<Uuid>().is_err()); // non-hex
+    }
+
+    #[test]
+    fn test_safety_number_validation() {
+        assert!(SAFETY1.parse::<SafetyNumber>().is_ok());
+        // With whitespace (common format)
+        assert!("12345 67890 12345 67890 12345 67890 12345 67890 12345 67890 12345 67890"
+            .parse::<SafetyNumber>()
+            .is_ok());
+        assert!("12345".parse::<SafetyNumber>().is_err()); // too short
+        assert!("12345678901234567890123456789012345678901234567890123456789x"
+            .parse::<SafetyNumber>()
+            .is_err()); // non-digit
+    }
+
     #[test]
     fn test_deserialize_map() {
-        let json = r#"{"uuid1": ["safety1", "safety2"], "uuid2": []}"#;
-        let trust_set: SignalTrustSet = serde_json::from_str(json).unwrap();
+        let json = format!(
+            r#"{{"{UUID1}": ["{SAFETY1}", "{SAFETY2}"], "{UUID2}": []}}"#
+        );
+        let trust_set: SignalTrustSet = serde_json::from_str(&json).unwrap();
 
         assert_eq!(trust_set.len(), 2);
-        assert!(trust_set.get("uuid1").is_some());
-        assert!(trust_set.get("uuid2").is_some());
-        assert_eq!(trust_set.get("uuid1").unwrap(), &vec!["safety1", "safety2"]);
-        assert_eq!(trust_set.get("uuid2").unwrap(), &Vec::<String>::new());
+        assert!(trust_set.get(UUID1).is_some());
+        assert!(trust_set.get(UUID2).is_some());
+        assert_eq!(trust_set.get(UUID1).unwrap().len(), 2);
+        assert!(trust_set.get(UUID2).unwrap().is_empty());
     }
 
     #[test]
     fn test_deserialize_seq() {
-        let json = r#"["uuid1", "uuid2", "uuid3"]"#;
-        let trust_set: SignalTrustSet = serde_json::from_str(json).unwrap();
+        let json = format!(r#"["{UUID1}", "{UUID2}", "{UUID3}"]"#);
+        let trust_set: SignalTrustSet = serde_json::from_str(&json).unwrap();
 
         assert_eq!(trust_set.len(), 3);
-        assert!(trust_set.get("uuid1").is_some());
-        assert!(trust_set.get("uuid2").is_some());
-        assert!(trust_set.get("uuid3").is_some());
+        assert!(trust_set.get(UUID1).is_some());
+        assert!(trust_set.get(UUID2).is_some());
+        assert!(trust_set.get(UUID3).is_some());
         // All should have empty safety numbers
-        assert!(trust_set.get("uuid1").unwrap().is_empty());
-        assert!(trust_set.get("uuid2").unwrap().is_empty());
-        assert!(trust_set.get("uuid3").unwrap().is_empty());
+        assert!(trust_set.get(UUID1).unwrap().is_empty());
+        assert!(trust_set.get(UUID2).unwrap().is_empty());
+        assert!(trust_set.get(UUID3).unwrap().is_empty());
     }
 
     #[test]
@@ -312,5 +504,17 @@ mod tests {
         let json = r#"[]"#;
         let uuids: SignalTrustSet = serde_json::from_str(json).unwrap();
         assert!(uuids.is_empty());
+    }
+
+    #[test]
+    fn test_invalid_uuid_rejected() {
+        let json = r#"["not-a-valid-uuid"]"#;
+        assert!(serde_json::from_str::<SignalTrustSet>(json).is_err());
+    }
+
+    #[test]
+    fn test_invalid_safety_number_rejected() {
+        let json = format!(r#"{{"{UUID1}": ["invalid"]}}"#);
+        assert!(serde_json::from_str::<SignalTrustSet>(&json).is_err());
     }
 }

@@ -196,8 +196,8 @@ signal_cli_tcp_addr = "127.0.0.1:7583"
 signal_cli_retry_delay = "10s"
 
 [signal_admins]
-"abc-123-uuid" = ["12345 67890 12345 67890 12345 67890"]
-"def-456-uuid" = []
+"12345678-1234-1234-1234-123456789abc" = ["12345 67890 12345 67890 12345 67890 12345 67890 12345 67890 12345 67890"]
+"abcdef12-abcd-abcd-abcd-abcdef123456" = []
 
 [syslog]
 listen_addr = "0.0.0.0:1514"
@@ -250,7 +250,7 @@ limits = [
             config
                 .gateway
                 .signal_admins
-                .get("abc-123-uuid")
+                .get("12345678-1234-1234-1234-123456789abc")
                 .is_some()
         );
 
