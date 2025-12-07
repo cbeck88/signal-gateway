@@ -24,9 +24,9 @@ use std::{path::PathBuf, str::FromStr, time::Duration};
 #[derive(Clone, Conf, Debug)]
 #[conf(serde)]
 pub struct PrometheusConfig {
-    /// Address of prometheus host. Should start with http and usually indicate port 9090
+    /// URL of the Prometheus server query API (e.g., `http://localhost:9090`).
     #[conf(long, env)]
-    pub prometheus_host: String,
+    pub prometheus_url: String,
     #[cfg(feature = "plot")]
     /// Configuration options for generated plots
     #[conf(flatten, prefix)]
@@ -58,7 +58,7 @@ impl Prometheus {
     ) -> Result<(ExtractLabels, Vec<Option<(f64, MetricVal)>>), BoxError> {
         info!("Prom query: {query}");
         let vector: Vec<MetricValue> = QueryRequest { query, time: None }
-            .send_with_client(&self.reqwest_client, &self.config.prometheus_host)
+            .send_with_client(&self.reqwest_client, &self.config.prometheus_url)
             .await?
             .into_vector()?;
 
@@ -76,7 +76,7 @@ impl Prometheus {
         Ok(SeriesRequest {
             matches: matches.into_iter().map(|s| s.as_ref().to_owned()).collect(),
         }
-        .send_with_client(&self.reqwest_client, &self.config.prometheus_host)
+        .send_with_client(&self.reqwest_client, &self.config.prometheus_url)
         .await?)
     }
 
@@ -88,14 +88,14 @@ impl Prometheus {
         Ok(LabelsRequest {
             matches: matches.into_iter().map(|s| s.as_ref().to_owned()).collect(),
         }
-        .send_with_client::<()>(&self.reqwest_client, &self.config.prometheus_host)
+        .send_with_client::<()>(&self.reqwest_client, &self.config.prometheus_url)
         .await?)
     }
 
     /// Get the list of current alerts
     pub async fn alerts(&self) -> Result<Vec<AlertInfo>, BoxError> {
         Ok(AlertsRequest {}
-            .send_with_client(&self.reqwest_client, &self.config.prometheus_host)
+            .send_with_client(&self.reqwest_client, &self.config.prometheus_url)
             .await?
             .alerts)
     }
@@ -151,7 +151,7 @@ impl Prometheus {
         let matrix = QueryRangeRequest::builder(query.clone())
             .range(now - range..now)
             .build()
-            .send_with_client(&self.reqwest_client, &self.config.prometheus_host)
+            .send_with_client(&self.reqwest_client, &self.config.prometheus_url)
             .await?
             .into_matrix()?;
 
@@ -170,7 +170,7 @@ impl Prometheus {
         let matrix = QueryRangeRequest::builder(query.to_owned())
             .since(since)
             .build()
-            .send_with_client(&self.reqwest_client, &self.config.prometheus_host)
+            .send_with_client(&self.reqwest_client, &self.config.prometheus_url)
             .await?
             .into_matrix()?;
 

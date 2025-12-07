@@ -62,10 +62,10 @@ pub struct GatewayConfig {
     /// Delay before retrying connection to signal-cli after an error.
     #[conf(long, env, default_value = "5s", value_parser = conf_extra::parse_duration, serde(use_value_parser))]
     pub signal_cli_retry_delay: Duration,
-    /// Admin UUIDs mapped to their safety numbers (can be empty).
+    /// Signal admin UUIDs mapped to their safety numbers (can be empty).
     /// Accepts either a map `{"uuid1": ["12345..."], "uuid2": []}` or a list `["uuid1", "uuid2"]`.
     #[conf(long, env, value_parser = serde_json::from_str)]
-    pub admin_signal_uuids: SignalTrustSet,
+    pub signal_admins: SignalTrustSet,
     /// If set, alerts are sent to this group instead of individual admins.
     #[conf(long, env)]
     pub alert_group_id: Option<String>,
@@ -306,7 +306,7 @@ impl Gateway {
         loop {
             match self
                 .config
-                .admin_signal_uuids
+                .signal_admins
                 .update_trust(signal_cli, &self.config.signal_account)
                 .await
             {
@@ -347,7 +347,7 @@ impl Gateway {
                                 if let Some(group_id) = &self.config.alert_group_id {
                                     MessageTarget::Group(group_id.clone())
                                 } else {
-                                    MessageTarget::Recipients(self.config.admin_signal_uuids.uuids().cloned().collect())
+                                    MessageTarget::Recipients(self.config.signal_admins.uuids().cloned().collect())
                                 }
                             }
                         };
@@ -384,7 +384,7 @@ impl Gateway {
                             let from_group = data_message.group_info.as_ref().map(|g| g.group_id.clone());
 
                             // Check if sender is an admin
-                            if !self.config.admin_signal_uuids.is_trusted(&msg.envelope) {
+                            if !self.config.signal_admins.is_trusted(&msg.envelope) {
                                 warn!("Ignoring message from non-admin: {msg:?}");
                                 continue;
                             }

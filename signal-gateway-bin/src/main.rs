@@ -6,7 +6,7 @@ use conf::{Conf, Subcommands};
 use hyper::service::service_fn;
 use hyper_util::{rt::TokioIo, server::conn::auto};
 use signal_gateway::{Gateway, GatewayConfig};
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{env, fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -33,6 +33,11 @@ pub enum AdminHandlerCommand {
 #[derive(Conf, Debug)]
 #[conf(serde, test)]
 pub struct Config {
+    /// Path to a TOML config file (optional).
+    /// This is parsed before other args, so config file values can be overridden by CLI args.
+    #[allow(dead_code)] // Parsed early via find_parameter, kept here for --help
+    #[conf(long)]
+    config_file: Option<PathBuf>,
     /// If true, just validate config and don't start
     #[conf(long)]
     dry_run: bool,
@@ -79,15 +84,28 @@ fn init_logging() {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     init_logging();
 
-    let config = Config::parse();
+    // Check for --config-file before the main parse, so we can load it and pass to conf
+    let config_file_path = conf::find_parameter("config-file", env::args_os());
+
+    let config = if let Some(config_path) = config_file_path {
+        let path_display = config_path.to_string_lossy();
+        let file_contents = fs::read_to_string(&config_path)
+            .map_err(|err| format!("Could not open config file '{path_display}': {err}"))?;
+        let doc: toml::Value = toml::from_str(&file_contents)
+            .map_err(|err| format!("Config file '{path_display}' is not valid TOML: {err}"))?;
+        info!("Loaded config file: {path_display}");
+        Config::conf_builder().doc(path_display, doc).parse()
+    } else {
+        Config::parse()
+    };
 
     info!("Config = {config:#?}");
 
     if config.dry_run {
-        return;
+        return Ok(());
     }
 
     let token = CancellationToken::new();
@@ -123,6 +141,8 @@ async fn main() {
 
     // Run gateway task and block on it returning. Note that it exits if the token is canceled.
     gateway.run().await;
+
+    Ok(())
 }
 
 fn start_http_task(listener: TcpListener, gateway: Arc<Gateway>) -> tokio::task::JoinHandle<()> {
@@ -175,7 +195,7 @@ signal_account = "+15551234567"
 signal_cli_tcp_addr = "127.0.0.1:7583"
 signal_cli_retry_delay = "10s"
 
-[admin_signal_uuids]
+[signal_admins]
 "abc-123-uuid" = ["12345 67890 12345 67890 12345 67890"]
 "def-456-uuid" = []
 
@@ -225,11 +245,11 @@ limits = [
             config.gateway.signal_cli_retry_delay,
             Duration::from_secs(10)
         );
-        assert_eq!(config.gateway.admin_signal_uuids.len(), 2);
+        assert_eq!(config.gateway.signal_admins.len(), 2);
         assert!(
             config
                 .gateway
-                .admin_signal_uuids
+                .signal_admins
                 .get("abc-123-uuid")
                 .is_some()
         );
