@@ -15,36 +15,19 @@ use tracing_subscriber::EnvFilter;
 mod admin_http;
 use admin_http::AdminHttpConfig;
 
-mod admin_netcat;
-use admin_netcat::AdminNetcatConfig;
+/// Handler for admin messages that don't match built-in commands.
+#[derive(Subcommands, Debug)]
+#[conf(serde)]
+pub enum AdminHandlerCommand {
+    /// Forward unhandled admin messages to an HTTP endpoint.
+    AdminHttp(AdminHttpConfig),
+}
 
 mod syslog;
 use syslog::SyslogConfig;
 
 pub mod json;
 use json::JsonConfig;
-
-/// Admin message handler configuration - select how non-command messages are handled
-#[derive(Clone, Debug, Subcommands)]
-#[conf(serde)]
-enum AdminHandlerCommand {
-    /// Forward (unhandled) admin messages to a TCP endpoint (netcat-style)
-    /// Useful if an http server would be heavy in the target process
-    #[conf(name = "admin-netcat")]
-    Netcat(AdminNetcatConfig),
-    /// Forward (unhandled) admin messages to an HTTP endpoint via POST
-    #[conf(name = "admin-http")]
-    Http(AdminHttpConfig),
-}
-
-impl AdminHandlerCommand {
-    fn into_handler(self) -> Box<dyn signal_gateway::MessageHandler> {
-        match self {
-            AdminHandlerCommand::Netcat(config) => config.into_handler(),
-            AdminHandlerCommand::Http(config) => config.into_handler(),
-        }
-    }
-}
 
 /// Top-level configuration for signal-gateway.
 #[derive(Conf, Debug)]
@@ -60,7 +43,7 @@ pub struct Config {
     syslog: Option<SyslogConfig>,
     #[conf(flatten, prefix)]
     json: Option<JsonConfig>,
-    /// Optional admin message handler (netcat or http)
+    /// Optional handler for admin messages that don't match built-in commands.
     #[conf(subcommands)]
     admin_handler: Option<AdminHandlerCommand>,
     #[conf(flatten, serde(flatten))]
@@ -109,7 +92,9 @@ async fn main() {
 
     let token = CancellationToken::new();
 
-    let message_handler = config.admin_handler.map(|c| c.into_handler());
+    let message_handler = config.admin_handler.map(|cmd| match cmd {
+        AdminHandlerCommand::AdminHttp(config) => config.into_handler(),
+    });
     let gateway = Arc::new(Gateway::new(config.gateway, token.clone(), message_handler).await);
 
     let listener = TcpListener::bind(config.http_listen_addr).await.unwrap();
