@@ -158,9 +158,7 @@ impl LogHandler {
 
     /// Consume a new log message from the given origin
     pub async fn handle_log_message(&self, log_msg: LogMessage, origin: Origin) {
-        let ts_sec = log_msg.get_timestamp_or_fallback();
-
-        let rate_limit_result = self.check_rate_limiters(&log_msg, &origin, ts_sec).await;
+        let rate_limit_result = self.check_rate_limiters(&log_msg, &origin).await;
 
         if let Err(reason) = &rate_limit_result {
             let sev = log_msg.level.to_str();
@@ -223,7 +221,6 @@ impl LogHandler {
         &self,
         log_msg: &LogMessage,
         origin: &Origin,
-        ts_sec: i64,
     ) -> Result<Option<Destination>, SuppressionReason> {
         let mut route_failures: Vec<(usize, LimitResult)> = Vec::new();
         let mut first_passed_destination: Option<Option<Destination>> = None;
@@ -241,7 +238,7 @@ impl LogHandler {
             }
 
             // Filter matched, evaluate the limiter set
-            let result = limiter_set.evaluate(log_msg, origin, ts_sec);
+            let result = limiter_set.evaluate(log_msg, origin);
 
             match result {
                 LimitResult::Passed => {
@@ -267,7 +264,7 @@ impl LogHandler {
         // At least one route passed, now check overall limits
         for (idx, (filter, limiter)) in self.overall_limits.iter().enumerate() {
             // Only evaluate the limiter if the message matches the filter
-            if filter.matches(log_msg) && !limiter.evaluate(log_msg, ts_sec) {
+            if filter.matches(log_msg) && !limiter.evaluate(log_msg) {
                 return Err(SuppressionReason::Overall(LimitResult::OverallLimiter(idx)));
             }
         }

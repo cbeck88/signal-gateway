@@ -107,7 +107,8 @@ impl Limiter {
     ///
     /// Returns `true` if the event should be allowed (not rate-limited),
     /// `false` if it should be suppressed.
-    pub fn evaluate(&self, log_msg: &LogMessage, ts_sec: i64) -> bool {
+    pub fn evaluate(&self, log_msg: &LogMessage) -> bool {
+        let ts_sec = log_msg.get_timestamp_or_fallback();
         match self {
             Limiter::Multi(limiter) => limiter.evaluate(ts_sec),
             Limiter::SourceLocation(limiter) => {

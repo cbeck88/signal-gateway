@@ -51,12 +51,12 @@ impl LimiterSet {
     /// Returns [`LimitResult::Passed`] if the event passes all limits.
     /// Returns [`LimitResult::Limiter(i)`] if blocked by per-origin limiter at index `i`.
     /// Returns [`LimitResult::GlobalLimiter(i)`] if blocked by global limiter at index `i`.
-    pub fn evaluate(&self, log_msg: &LogMessage, origin: &Origin, ts_sec: i64) -> LimitResult {
+    pub fn evaluate(&self, log_msg: &LogMessage, origin: &Origin) -> LimitResult {
         // Check per-origin limiters
         let origin_result = self.limiters.get(origin, |origin_limiters| {
             for (i, (filter, limiter)) in origin_limiters.iter().enumerate() {
                 // Only evaluate the limiter if the message matches the filter
-                if filter.matches(log_msg) && !limiter.evaluate(log_msg, ts_sec) {
+                if filter.matches(log_msg) && !limiter.evaluate(log_msg) {
                     return Some(LimitResult::Limiter(i));
                 }
             }
@@ -70,7 +70,7 @@ impl LimiterSet {
         // Check global limiters
         for (i, (filter, limiter)) in self.global_limiters.iter().enumerate() {
             // Only evaluate the limiter if the message matches the filter
-            if filter.matches(log_msg) && !limiter.evaluate(log_msg, ts_sec) {
+            if filter.matches(log_msg) && !limiter.evaluate(log_msg) {
                 return LimitResult::GlobalLimiter(i);
             }
         }
