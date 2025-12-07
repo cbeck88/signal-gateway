@@ -22,8 +22,8 @@ pub enum SuppressionReason {
     /// Suppressed by route limiters. Contains the index and result for each
     /// route whose filter matched but whose limiter blocked the message.
     Routes(Vec<(usize, LimitResult)>),
-    /// Suppressed by an overall limiter.
-    Overall(LimitResult),
+    /// Suppressed by an overall limiter at the given index.
+    OverallLimiter(usize),
 }
 
 impl fmt::Display for SuppressionReason {
@@ -40,8 +40,8 @@ impl fmt::Display for SuppressionReason {
                 }
                 write!(f, "]")
             }
-            SuppressionReason::Overall(result) => {
-                write!(f, "overall:{result:?}")
+            SuppressionReason::OverallLimiter(idx) => {
+                write!(f, "overall[{idx}]")
             }
         }
     }
@@ -263,7 +263,7 @@ impl LogHandler {
 
         // At least one route passed, now check overall limits
         if let Err(i) = evaluate_limiter_sequence(&self.overall_limits, log_msg) {
-            return Err(SuppressionReason::Overall(LimitResult::OverallLimiter(i)));
+            return Err(SuppressionReason::OverallLimiter(i));
         }
 
         // All checks passed

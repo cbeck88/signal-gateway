@@ -16,8 +16,6 @@ pub enum LimitResult {
     Limiter(usize),
     /// The event was blocked by a global limiter at the given index.
     GlobalLimiter(usize),
-    /// The event was blocked by an overall limiter at the given index.
-    OverallLimiter(usize),
 }
 
 /// A set of limiters for a route, containing both per-origin and global limiters.
