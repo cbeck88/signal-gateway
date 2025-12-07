@@ -170,7 +170,10 @@ impl SignalTrustSet {
                     }
                 }
 
-                info!("Trust reset verified for {uuid}: {} safety numbers trusted", trusted_now.len());
+                info!(
+                    "Trust reset verified for {uuid}: {} safety numbers trusted",
+                    trusted_now.len()
+                );
             } else {
                 // Just add any new safety numbers that aren't already trusted
                 let already_trusted: Vec<_> = current_identities

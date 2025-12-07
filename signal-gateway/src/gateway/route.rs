@@ -29,12 +29,14 @@ pub struct Limit {
 
 impl Limit {
     /// Create the appropriate limiter for this limit configuration.
-    pub fn make_limiter(&self) -> Limiter {
-        if self.by_source_location {
+    /// Returns a (filter, limiter) pair so the filter can be checked before rate limiting.
+    pub fn make_limiter(&self) -> (LogFilter, Limiter) {
+        let limiter = if self.by_source_location {
             Limiter::source_location(self.threshold)
         } else {
             Limiter::multi(self.threshold)
-        }
+        };
+        (self.filter.clone(), limiter)
     }
 }
 
@@ -81,7 +83,11 @@ impl Route {
     /// Create a limiter set from this route's limit configurations.
     pub fn make_limiter_set(&self) -> LimiterSet {
         let limits = self.limits.clone();
-        let global_limiters = self.global_limits.iter().map(|l| l.make_limiter()).collect();
+        let global_limiters = self
+            .global_limits
+            .iter()
+            .map(|l| l.make_limiter())
+            .collect();
         LimiterSet::new(
             move || limits.iter().map(|l| l.make_limiter()).collect(),
             global_limiters,

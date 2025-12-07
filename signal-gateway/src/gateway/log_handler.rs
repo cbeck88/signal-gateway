@@ -6,7 +6,7 @@ use super::{
 use crate::{
     concurrent_map::LazyMap,
     log_format::LogFormatConfig,
-    log_message::{LogMessage, Origin},
+    log_message::{LogFilter, LogMessage, Origin},
 };
 use chrono::Utc;
 use conf::Conf;
@@ -22,8 +22,8 @@ pub enum SuppressionReason {
     /// Suppressed by route limiters. Contains the index and result for each
     /// route whose filter matched but whose limiter blocked the message.
     Routes(Vec<(usize, LimitResult)>),
-    /// Suppressed by an overall limiter. Contains the limiter index and result.
-    Overall(usize, LimitResult),
+    /// Suppressed by an overall limiter.
+    Overall(LimitResult),
 }
 
 impl fmt::Display for SuppressionReason {
@@ -40,8 +40,8 @@ impl fmt::Display for SuppressionReason {
                 }
                 write!(f, "]")
             }
-            SuppressionReason::Overall(idx, result) => {
-                write!(f, "overall[{idx}]:{result:?}")
+            SuppressionReason::Overall(result) => {
+                write!(f, "overall:{result:?}")
             }
         }
     }
@@ -82,7 +82,8 @@ pub struct LogHandler {
     /// Routes with their associated limiter sets.
     routes: Vec<(Route, LimiterSet)>,
     /// Overall rate limiters applied after route checks pass.
-    overall_limits: Vec<Limiter>,
+    /// Each entry is a (filter, limiter) pair.
+    overall_limits: Vec<(LogFilter, Limiter)>,
 }
 
 impl LogHandler {
@@ -118,42 +119,41 @@ impl LogHandler {
     ///
     /// If `filter` is provided, only origins matching the filter are included.
     pub async fn format_logs(&self, filter: Option<&str>) -> String {
-        self.log_buffers
-            .with_read_lock(|buffers| {
-                if buffers.is_empty() {
-                    return "No log sources registered yet".to_string();
+        self.log_buffers.with_read_lock(|buffers| {
+            if buffers.is_empty() {
+                return "No log sources registered yet".to_string();
+            }
+
+            let mut text = String::with_capacity(4096);
+            let now = Utc::now();
+
+            for (origin, buffer) in buffers.iter() {
+                // Apply filter if present
+                if filter.is_some_and(|f| !origin.matches_filter(f)) {
+                    continue;
                 }
 
-                let mut text = String::with_capacity(4096);
-                let now = Utc::now();
-
-                for (origin, buffer) in buffers.iter() {
-                    // Apply filter if present
-                    if filter.is_some_and(|f| !origin.matches_filter(f)) {
-                        continue;
+                use std::fmt::Write;
+                writeln!(&mut text, "=== [{origin}] ===").unwrap();
+                buffer.with_iter(|iter| {
+                    writeln!(&mut text, "{} log messages (newest first):", iter.len()).unwrap();
+                    // Guess at how much to reserve
+                    text.reserve(iter.len() * 128);
+                    for log_msg in iter {
+                        self.config
+                            .log_format
+                            .write_log_msg(&mut text, log_msg, now);
                     }
+                });
+                text.push('\n');
+            }
 
-                    use std::fmt::Write;
-                    writeln!(&mut text, "=== [{origin}] ===").unwrap();
-                    buffer.with_iter(|iter| {
-                        writeln!(&mut text, "{} log messages (newest first):", iter.len()).unwrap();
-                        // Guess at how much to reserve
-                        text.reserve(iter.len() * 128);
-                        for log_msg in iter {
-                            self.config
-                                .log_format
-                                .write_log_msg(&mut text, log_msg, now);
-                        }
-                    });
-                    text.push('\n');
-                }
-
-                if text.is_empty() {
-                    "No matching log sources".to_string()
-                } else {
-                    text
-                }
-            })
+            if text.is_empty() {
+                "No matching log sources".to_string()
+            } else {
+                text
+            }
+        })
     }
 
     /// Consume a new log message from the given origin
@@ -170,33 +170,31 @@ impl LogHandler {
         }
 
         // Get or create the buffer for this origin, then record the message
-        let formatted_text = self
-            .log_buffers
-            .get(&origin, |buffer| {
-                if rate_limit_result.is_err() {
-                    buffer.push_back(log_msg);
-                    None
-                } else {
-                    // Guess at capacity, it will be faster to use too much memory than too little
-                    // signal-cli JVM is a hog anyways.
-                    let mut text = String::with_capacity(4096);
-                    let mut first_msg_len = 0;
-                    let mut is_first = true;
-                    let now = Utc::now();
+        let formatted_text = self.log_buffers.get(&origin, |buffer| {
+            if rate_limit_result.is_err() {
+                buffer.push_back(log_msg);
+                None
+            } else {
+                // Guess at capacity, it will be faster to use too much memory than too little
+                // signal-cli JVM is a hog anyways.
+                let mut text = String::with_capacity(4096);
+                let mut first_msg_len = 0;
+                let mut is_first = true;
+                let now = Utc::now();
 
-                    buffer.push_back_and_drain(log_msg, |log_msg| {
-                        self.config
-                            .log_format
-                            .write_log_msg(&mut text, log_msg, now);
-                        if is_first {
-                            first_msg_len = text.len();
-                            is_first = false;
-                        }
-                    });
+                buffer.push_back_and_drain(log_msg, |log_msg| {
+                    self.config
+                        .log_format
+                        .write_log_msg(&mut text, log_msg, now);
+                    if is_first {
+                        first_msg_len = text.len();
+                        is_first = false;
+                    }
+                });
 
-                    Some((text, first_msg_len))
-                }
-            });
+                Some((text, first_msg_len))
+            }
+        });
 
         // Send alert if we have formatted text
         if let Some((text, first_msg_len)) = formatted_text {
@@ -269,9 +267,10 @@ impl LogHandler {
         };
 
         // At least one route passed, now check overall limits
-        for (idx, limiter) in self.overall_limits.iter().enumerate() {
-            if !limiter.evaluate(log_msg, ts_sec) {
-                return Err(SuppressionReason::Overall(idx, LimitResult::Limiter(0)));
+        for (idx, (filter, limiter)) in self.overall_limits.iter().enumerate() {
+            // Only evaluate the limiter if the message matches the filter
+            if filter.matches(log_msg) && !limiter.evaluate(log_msg, ts_sec) {
+                return Err(SuppressionReason::Overall(LimitResult::OverallLimiter(idx)));
             }
         }
 

@@ -230,10 +230,7 @@ limits = [
             .try_parse()
             .expect("Failed to parse config");
 
-        assert_eq!(
-            config.http_listen_addr,
-            "0.0.0.0:8080".parse().unwrap()
-        );
+        assert_eq!(config.http_listen_addr, "0.0.0.0:8080".parse().unwrap());
         assert_eq!(config.gateway.signal_account, "+15551234567");
         assert_eq!(
             config.gateway.signal_cli_tcp_addr,
@@ -244,7 +241,13 @@ limits = [
             Duration::from_secs(10)
         );
         assert_eq!(config.gateway.admin_signal_uuids.len(), 2);
-        assert!(config.gateway.admin_signal_uuids.get("abc-123-uuid").is_some());
+        assert!(
+            config
+                .gateway
+                .admin_signal_uuids
+                .get("abc-123-uuid")
+                .is_some()
+        );
 
         let syslog = config.syslog.expect("syslog should be present");
         assert_eq!(syslog.listen_addr, "0.0.0.0:1514".parse().unwrap());
