@@ -1,6 +1,8 @@
 //! Claude API integration for AI-powered responses with tool use support.
 
 mod tools;
+mod worker;
+
 pub use tools::{Tool, ToolExecutor};
 
 use conf::Conf;
@@ -8,13 +10,17 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 use std::sync::Weak;
-use tracing::info;
+use tokio::sync::{mpsc, oneshot};
+use worker::{ClaudeRequest, ClaudeWorker};
 
 /// The Anthropic API version header value. This is a stable version identifier,
 /// not a date indicating when the API was released. Anthropic adds new features
 /// through separate `anthropic-beta` headers rather than bumping this version.
 /// The official Anthropic SDKs use this same value.
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
+
+/// Size of the request queue for the Claude worker.
+const REQUEST_QUEUE_SIZE: usize = 16;
 
 /// Configuration for the Claude API integration.
 #[derive(Clone, Conf, Debug)]
@@ -55,24 +61,31 @@ pub enum ClaudeError {
     /// API returned an error response.
     #[error("API error: {0}")]
     ApiError(String),
-    /// Tool execution failed.
-    #[error("tool execution failed: {0}")]
-    ToolError(String),
     /// Too many tool use iterations.
     #[error("exceeded maximum tool use iterations ({0})")]
     TooManyIterations(u32),
     /// Tool executor is no longer available.
     #[error("tool executor is gone")]
     ToolExecutorGone,
+    /// Request queue is full.
+    #[error("request queue is full")]
+    QueueFull,
+    /// Worker has shut down.
+    #[error("worker has shut down")]
+    WorkerGone,
+    /// Worker returned an error.
+    #[error("{0}")]
+    WorkerError(String),
 }
 
 /// Claude API client.
+///
+/// Requests are processed serially by a background worker to prevent
+/// concurrent API calls.
 pub struct ClaudeApi {
-    config: ClaudeConfig,
-    client: reqwest::Client,
-    api_key: String,
-    system_prompt: String,
-    tool_executor: Weak<dyn ToolExecutor>,
+    request_tx: mpsc::Sender<ClaudeRequest>,
+    #[allow(dead_code)]
+    worker_handle: tokio::task::JoinHandle<()>,
 }
 
 /// Request body for the Claude Messages API.
@@ -167,122 +180,46 @@ impl ClaudeApi {
     /// The tool executor is held as a weak reference, so it will not prevent
     /// the executor from being dropped. If the executor is dropped during a
     /// request, tool use will fail with `ToolExecutorGone`.
+    ///
+    /// Spawns a background worker task that processes requests serially.
     pub fn new(
         config: ClaudeConfig,
         tool_executor: Weak<dyn ToolExecutor>,
     ) -> Result<Self, ClaudeError> {
-        let api_key = std::fs::read_to_string(&config.api_key_file)
-            .map_err(ClaudeError::ApiKeyRead)?
-            .trim()
-            .to_owned();
+        let (request_tx, request_rx) = mpsc::channel(REQUEST_QUEUE_SIZE);
 
-        let system_prompt = std::fs::read_to_string(&config.system_prompt_file)
-            .map_err(ClaudeError::SystemPromptRead)?;
+        let worker = ClaudeWorker::new(config, tool_executor, request_rx)?;
 
-        let client = reqwest::Client::new();
+        let worker_handle = tokio::spawn(async move {
+            worker.run().await;
+            tracing::info!("Claude worker task exited");
+        });
 
         Ok(Self {
-            config,
-            client,
-            api_key,
-            system_prompt,
-            tool_executor,
+            request_tx,
+            worker_handle,
         })
     }
 
     /// Send a request to the Claude API and return the response text.
-    /// If a tool executor has been installed, handles tool use in a loop.
+    ///
+    /// Returns a future that resolves when the request is complete.
+    /// Returns `QueueFull` error if the request queue is full.
     pub async fn request(&self, prompt: &str) -> Result<String, ClaudeError> {
-        let max_iterations = self.config.claude_max_iterations;
+        let (result_tx, result_rx) = oneshot::channel();
 
-        // Get tools from the executor if still alive
-        let executor = self.tool_executor.upgrade();
-        let tools = executor.as_ref().map(|te| te.tools()).unwrap_or_default();
-        let mut messages = vec![MessageContent::user(prompt)];
+        let request = ClaudeRequest {
+            prompt: prompt.to_owned(),
+            result_sender: result_tx,
+        };
 
-        info!("Claude request: {}", prompt);
+        self.request_tx
+            .try_send(request)
+            .map_err(|_| ClaudeError::QueueFull)?;
 
-        for iteration in 0..max_iterations {
-            let request_body = MessagesRequest {
-                model: &self.config.claude_model,
-                max_tokens: self.config.claude_max_tokens,
-                system: &self.system_prompt,
-                messages: messages.clone(),
-                tools: tools.clone(),
-            };
-
-            let response = self
-                .client
-                .post(&self.config.claude_api_url)
-                .header("x-api-key", &self.api_key)
-                .header("anthropic-version", ANTHROPIC_API_VERSION)
-                .header("content-type", "application/json")
-                .json(&request_body)
-                .send()
-                .await?;
-
-            if !response.status().is_success() {
-                let error: ErrorResponse = response.json().await?;
-                return Err(ClaudeError::ApiError(error.error.message));
-            }
-
-            let response: MessagesResponse = response.json().await?;
-            info!(
-                "Claude response (stop_reason={}): {:?}",
-                response.stop_reason, response.content
-            );
-
-            // Check if we need to handle tool use
-            if response.stop_reason == "tool_use" {
-                // Try to get a strong reference to the executor
-                let Some(executor) = self.tool_executor.upgrade() else {
-                    return Err(ClaudeError::ToolExecutorGone);
-                };
-
-                // Add assistant's response to messages
-                messages.push(MessageContent::assistant(response.content.clone()));
-
-                // Execute each tool use and collect results
-                for block in &response.content {
-                    if let ContentBlock::ToolUse { id, name, input } = block {
-                        info!("Claude tool use: {}({})", name, input);
-                        let (result, is_error) = match executor.execute(name, input).await {
-                            Ok(result) => {
-                                info!("Tool result: {}", result);
-                                (result, false)
-                            }
-                            Err(err) => {
-                                info!("Tool error: {}", err);
-                                (err, true)
-                            }
-                        };
-                        messages.push(MessageContent::tool_result(id.clone(), result, is_error));
-                    }
-                }
-
-                // Continue the loop to get Claude's next response
-                info!("Tool use iteration {}, continuing...", iteration + 1);
-                continue;
-            }
-
-            // No tool use, extract final text response
-            let text = response
-                .content
-                .into_iter()
-                .filter_map(|block| {
-                    if let ContentBlock::Text { text } = block {
-                        Some(text)
-                    } else {
-                        None
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("\n");
-
-            info!("Claude final result: {}", text);
-            return Ok(text);
-        }
-
-        Err(ClaudeError::TooManyIterations(max_iterations))
+        result_rx
+            .await
+            .map_err(|_| ClaudeError::WorkerGone)?
+            .map_err(ClaudeError::WorkerError)
     }
 }
