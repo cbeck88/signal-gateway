@@ -1,9 +1,8 @@
 //! Background worker that processes Claude API requests serially.
 
-use super::{
-    ClaudeConfig, ClaudeError, ContentBlock, ErrorResponse, MessageContent, MessagesRequest,
-    MessagesResponse, ToolExecutor, ANTHROPIC_API_VERSION,
-};
+use super::{ANTHROPIC_API_VERSION, ClaudeConfig, ClaudeError, Tool, ToolExecutor};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::Weak;
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
@@ -198,4 +197,89 @@ impl ClaudeWorker {
 
         Err(ClaudeError::TooManyIterations(max_iterations))
     }
+}
+
+/// Request body for the Claude Messages API.
+#[derive(Serialize)]
+struct MessagesRequest<'a> {
+    model: &'a str,
+    max_tokens: u32,
+    system: &'a str,
+    messages: Vec<MessageContent>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<Tool>,
+}
+
+/// A message in the conversation (can have multiple content blocks).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct MessageContent {
+    role: String,
+    content: Vec<ContentBlock>,
+}
+
+impl MessageContent {
+    fn user(text: &str) -> Self {
+        Self {
+            role: "user".to_owned(),
+            content: vec![ContentBlock::Text {
+                text: text.to_owned(),
+            }],
+        }
+    }
+
+    fn assistant(blocks: Vec<ContentBlock>) -> Self {
+        Self {
+            role: "assistant".to_owned(),
+            content: blocks,
+        }
+    }
+
+    fn tool_result(tool_use_id: String, content: String, is_error: bool) -> Self {
+        Self {
+            role: "user".to_owned(),
+            content: vec![ContentBlock::ToolResult {
+                tool_use_id,
+                content,
+                is_error: if is_error { Some(true) } else { None },
+            }],
+        }
+    }
+}
+
+/// A content block in the request/response.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ContentBlock {
+    Text {
+        text: String,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_error: Option<bool>,
+    },
+}
+
+/// Response from the Claude Messages API.
+#[derive(Debug, Deserialize)]
+struct MessagesResponse {
+    content: Vec<ContentBlock>,
+    stop_reason: String,
+}
+
+/// Error response from the Claude API.
+#[derive(Deserialize)]
+struct ErrorResponse {
+    error: ApiErrorDetail,
+}
+
+#[derive(Deserialize)]
+struct ApiErrorDetail {
+    message: String,
 }
