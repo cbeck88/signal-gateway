@@ -4,7 +4,7 @@
 use crate::signal_jsonrpc::connect_ipc;
 use crate::{
     alertmanager::AlertPost,
-    claude::{ClaudeApi, ClaudeConfig, Tool, ToolExecutor},
+    claude::{ClaudeApi, ClaudeConfig, SentBy, Tool, ToolExecutor},
     log_message::{LogMessage, Origin},
     message_handler::{
         AdminMessage, AdminMessageResponse, Context, MessageHandler, MessageHandlerResult,
@@ -147,6 +147,9 @@ enum GatewayCommand {
     /// Stop current Claude request
     #[conf(name = "cs", alias = "CS")]
     ClaudeStop,
+    /// Compact Claude's message history
+    #[conf(name = "compact", alias = "COMPACT")]
+    ClaudeCompact,
 }
 
 /// Parse a gateway command from a string (with or without leading /)
@@ -405,9 +408,13 @@ impl Gateway {
                         SignalMessage {
                             sender: self.config.signal_account.clone(),
                             target,
-                            message,
+                            message: message.clone(),
                             attachments,
                         }.send(signal_cli).await?;
+
+                        if let Some(claude) = self.claude.get() {
+                            claude.record_message(SentBy::System, &message, Utc::now().timestamp_millis() as u64);
+                        }
                     } else {
                         warn!("alert_rx is closed, halting service");
                         self.token.cancel();
@@ -455,7 +462,7 @@ impl Gateway {
                                 AdminMessageResponse::new(text)
                             });
 
-                            let attachments = resp.attachments.into_iter().map(|p| p.to_str().expect("attachments must have utf8 paths").to_owned()).collect();
+                            let attachments = resp.attachments.iter().map(|p| p.to_str().expect("attachments must have utf8 paths").to_owned()).collect();
 
                             // Reply to group if message came from a group, otherwise reply to sender
                             let target = if let Some(group_id) = from_group {
@@ -467,9 +474,14 @@ impl Gateway {
                             SignalMessage {
                                 sender: self.config.signal_account.clone(),
                                 target,
-                                message: resp.text,
+                                message: resp.text.clone(),
                                 attachments,
                             }.send(signal_cli).await?;
+
+                            if let Some(claude) = self.claude.get() {
+                                let sent_by = if resp.is_claude { SentBy::Claude } else { SentBy::System };
+                                claude.record_message(sent_by, &resp.text, Utc::now().timestamp_millis() as u64);
+                            }
                         }
                     }
                 }
@@ -488,8 +500,31 @@ impl Gateway {
             // Parse the command using conf
             let cmd = parse_gateway_command(&data.message).map_err(|err| (400u16, err.into()))?;
 
-            self.handle_gateway_command(cmd).await
+            // Record this as a system command in Claude's history, unless it's a Claude
+            // prompt command (which will be recorded when we call request())
+            let is_claude = matches!(cmd, GatewayCommand::Claude { .. });
+            if !is_claude {
+                if let Some(claude) = self.claude.get() {
+                    claude.record_message(
+                        SentBy::UserToSystem,
+                        &data.message,
+                        data.timestamp,
+                    );
+                }
+            }
+
+            let resp = self.handle_gateway_command(cmd, data.timestamp).await?;
+            Ok(if is_claude { resp.from_claude() } else { resp })
         } else if let Some(handler) = &self.message_handler {
+            // Record this as a system message in Claude's history (not directed at Claude)
+            if let Some(claude) = self.claude.get() {
+                claude.record_message(
+                    SentBy::UserToSystem,
+                    &data.message,
+                    data.timestamp,
+                );
+            }
+
             let msg = AdminMessage {
                 message: data.message.clone(),
                 timestamp: data.timestamp,
@@ -566,7 +601,11 @@ impl Gateway {
         }
     }
 
-    async fn handle_gateway_command(&self, cmd: GatewayCommand) -> MessageHandlerResult {
+    async fn handle_gateway_command(
+        &self,
+        cmd: GatewayCommand,
+        ts_ms: u64,
+    ) -> MessageHandlerResult {
         match cmd {
             GatewayCommand::Log { filter } => {
                 let text = self.log_handler.format_logs(filter.as_deref()).await;
@@ -713,7 +752,7 @@ impl Gateway {
                     .ok_or_else(|| (501u16, "claude was not configured".into()))?;
 
                 let prompt_text = prompt.join(" ");
-                match claude.request(&prompt_text).await {
+                match claude.request(&prompt_text, ts_ms).await {
                     Ok(response) => Ok(AdminMessageResponse::new(response)),
                     Err(err) => Err((500, err.to_string().into())),
                 }
@@ -726,6 +765,15 @@ impl Gateway {
 
                 claude.request_stop();
                 Ok(AdminMessageResponse::new("stop requested"))
+            }
+            GatewayCommand::ClaudeCompact => {
+                let claude = self
+                    .claude
+                    .get()
+                    .ok_or_else(|| (501u16, "claude was not configured".into()))?;
+
+                claude.request_compaction();
+                Ok(AdminMessageResponse::new("compaction requested"))
             }
         }
     }

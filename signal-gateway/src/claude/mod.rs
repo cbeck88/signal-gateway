@@ -4,12 +4,14 @@ mod tools;
 mod worker;
 
 pub use tools::{Tool, ToolExecutor};
+pub use worker::SentBy;
 
+use chrono::{DateTime, Utc};
 use conf::Conf;
 use std::path::PathBuf;
 use std::sync::Weak;
 use tokio::sync::{mpsc, oneshot};
-use worker::{ClaudeRequest, ClaudeWorker};
+use worker::{ChatMessage, ClaudeWorker, Input};
 
 /// The Anthropic API version header value. This is a stable version identifier,
 /// not a date indicating when the API was released. Anthropic adds new features
@@ -58,7 +60,7 @@ pub enum ClaudeError {
     Request(#[from] reqwest::Error),
     /// API returned an error response.
     #[error("API error: {0}")]
-    ApiError(String),
+    ApiError(Box<str>),
     /// Too many tool use iterations.
     #[error("exceeded maximum tool use iterations ({0})")]
     TooManyIterations(u32),
@@ -81,7 +83,7 @@ pub enum ClaudeError {
 /// Requests are processed serially by a background worker to prevent
 /// concurrent API calls.
 pub struct ClaudeApi {
-    request_tx: mpsc::Sender<ClaudeRequest>,
+    input_tx: mpsc::Sender<Input>,
     stop_tx: mpsc::Sender<()>,
     #[allow(dead_code)]
     worker_handle: tokio::task::JoinHandle<()>,
@@ -100,10 +102,10 @@ impl ClaudeApi {
         config: ClaudeConfig,
         tool_executor: Weak<dyn ToolExecutor>,
     ) -> Result<Self, ClaudeError> {
-        let (request_tx, request_rx) = mpsc::channel(REQUEST_QUEUE_SIZE);
+        let (input_tx, input_rx) = mpsc::channel(REQUEST_QUEUE_SIZE);
         let (stop_tx, stop_rx) = mpsc::channel(REQUEST_QUEUE_SIZE);
 
-        let worker = ClaudeWorker::new(config, tool_executor, request_rx, stop_rx)?;
+        let worker = ClaudeWorker::new(config, tool_executor, input_rx, stop_rx)?;
 
         let worker_handle = tokio::spawn(async move {
             worker.run().await;
@@ -111,26 +113,29 @@ impl ClaudeApi {
         });
 
         Ok(Self {
-            request_tx,
+            input_tx,
             stop_tx,
             worker_handle,
         })
     }
 
-    /// Send a request to the Claude API and return the response text.
+    /// Send a prompt to the Claude API, execute tools etc., and return the response text.
     ///
     /// Returns a future that resolves when the request is complete.
     /// Returns `QueueFull` error if the request queue is full.
-    pub async fn request(&self, prompt: &str) -> Result<String, ClaudeError> {
+    pub async fn request(&self, prompt: &str, ts_ms: u64) -> Result<String, ClaudeError> {
         let (result_tx, result_rx) = oneshot::channel();
 
-        let request = ClaudeRequest {
-            prompt: prompt.to_owned(),
-            result_sender: result_tx,
+        let timestamp = DateTime::from_timestamp_millis(ts_ms as i64).unwrap_or_else(Utc::now);
+        let msg = ChatMessage {
+            sent_by: SentBy::UserToClaude,
+            text: prompt.into(),
+            timestamp,
+            result_sender: Some(result_tx),
         };
 
-        self.request_tx
-            .try_send(request)
+        self.input_tx
+            .try_send(Input::Chat(msg))
             .map_err(|_| ClaudeError::QueueFull)?;
 
         // result_rx.await has type Result<Result<String, ClaudeError>, RecvError>
@@ -138,7 +143,26 @@ impl ClaudeApi {
         result_rx.await.map_err(|_| ClaudeError::WorkerGone)?
     }
 
-    /// Request the worker to stop processing.
+    /// Record a message into claude's chat log that claude is not expected to respond to
+    pub fn record_message(&self, sent_by: SentBy, text: &str, ts_ms: u64) {
+        let timestamp = DateTime::from_timestamp_millis(ts_ms as i64).unwrap_or_else(Utc::now);
+        let msg = ChatMessage {
+            sent_by,
+            text: text.into(),
+            timestamp,
+            result_sender: None,
+        };
+
+        let _ = self.input_tx.try_send(Input::Chat(msg));
+    }
+
+    /// Request the worker to perform compaction (summarizing their recent message history and discarding it)
+    pub fn request_compaction(&self) {
+        let _ = self.input_tx.try_send(Input::Compact);
+    }
+
+    /// Request the worker to interrupt any prompts it is responding to, discard any queued messages,
+    /// and get ready to accept different prompts.
     ///
     /// This will cause the current request (if any) to be interrupted at the
     /// next opportunity, and all pending requests to receive `StopRequested` errors.

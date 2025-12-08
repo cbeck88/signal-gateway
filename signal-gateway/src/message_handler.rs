@@ -35,6 +35,8 @@ pub struct AdminMessageResponse {
     pub text: String,
     /// Optional file attachments to include with the response.
     pub attachments: Vec<PathBuf>,
+    /// Whether this response came from Claude (true) or the system (false).
+    pub(crate) is_claude: bool,
 }
 
 impl AdminMessageResponse {
@@ -43,6 +45,7 @@ impl AdminMessageResponse {
         Self {
             text: text.into(),
             attachments: Vec::new(),
+            is_claude: false,
         }
     }
 
@@ -60,6 +63,12 @@ impl AdminMessageResponse {
     /// Add multiple attachments to the response.
     pub fn with_attachments(mut self, paths: impl IntoIterator<Item = impl Into<PathBuf>>) -> Self {
         self.attachments.extend(paths.into_iter().map(Into::into));
+        self
+    }
+
+    /// Mark this response as coming from Claude.
+    pub(crate) fn from_claude(mut self) -> Self {
+        self.is_claude = true;
         self
     }
 }
@@ -95,6 +104,7 @@ impl AdminMessageResponseBuilder {
         AdminMessageResponse {
             text: self.text,
             attachments: self.attachments,
+            is_claude: false,
         }
     }
 }

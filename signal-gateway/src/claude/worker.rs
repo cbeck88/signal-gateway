@@ -1,16 +1,70 @@
 //! Background worker that processes Claude API requests serially.
 
 use super::{ANTHROPIC_API_VERSION, ClaudeConfig, ClaudeError, Tool, ToolExecutor};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Weak;
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
 
-/// A request to be processed by the Claude worker.
-pub struct ClaudeRequest {
-    pub prompt: String,
-    pub result_sender: oneshot::Sender<Result<String, ClaudeError>>,
+/// Sent with inputs to claude that claude is expected to respond to. The sender
+/// gives the worker a way to return the results to the caller asynchronously.
+pub type ResultSender = oneshot::Sender<Result<String, ClaudeError>>;
+
+/// Indicates the "role" i.e. the manner in which a particular message was sent
+pub enum SentBy {
+    /// User message directed at the system (commands, etc.)
+    UserToSystem,
+    /// User message directed at Claude (prompts)
+    UserToClaude,
+    /// Response from Claude
+    Claude,
+    /// System-generated message
+    System,
+    /// Alert from alertmanager
+    AlertManager,
+}
+
+impl SentBy {
+    fn role(&self) -> &str {
+        match self {
+            Self::UserToSystem => "user (speaking to system)",
+            Self::UserToClaude => "user (speaking to assistant)",
+            Self::Claude => "assistant",
+            Self::System => "system",
+            Self::AlertManager => "alertmanager",
+        }
+    }
+}
+
+/// An input to the worker sent through the channel
+pub enum Input {
+    Chat(ChatMessage),
+    Compact,
+}
+
+/// A chat message
+pub struct ChatMessage {
+    pub sent_by: SentBy,
+    pub timestamp: DateTime<Utc>,
+    pub text: Box<str>,
+    /// Present when claude is expected to respond to the message
+    pub result_sender: Option<ResultSender>,
+}
+
+impl ChatMessage {
+    fn into_content_and_sender(self) -> (MessageContent, Option<ResultSender>) {
+        let mc = MessageContent {
+            role: self.sent_by.role().into(),
+            content: vec![ContentBlock::Text {
+                text: self.text,
+                timestamp: Some(self.timestamp),
+            }],
+        };
+
+        (mc, self.result_sender)
+    }
 }
 
 /// Background worker that processes Claude API requests serially.
@@ -19,8 +73,12 @@ pub struct ClaudeWorker {
     client: reqwest::Client,
     api_key: String,
     system_prompt: String,
+    // FIXME: use this and append to system prompt within <summary> </summary> tags
+    #[allow(dead_code)]
+    summary: String,
+    messages: Vec<MessageContent>,
     tool_executor: Weak<dyn ToolExecutor>,
-    request_rx: mpsc::Receiver<ClaudeRequest>,
+    input_rx: mpsc::Receiver<Input>,
     stop_rx: mpsc::Receiver<()>,
 }
 
@@ -31,7 +89,7 @@ impl ClaudeWorker {
     pub fn new(
         config: ClaudeConfig,
         tool_executor: Weak<dyn ToolExecutor>,
-        request_rx: mpsc::Receiver<ClaudeRequest>,
+        input_rx: mpsc::Receiver<Input>,
         stop_rx: mpsc::Receiver<()>,
     ) -> Result<Self, ClaudeError> {
         let api_key = std::fs::read_to_string(&config.api_key_file)
@@ -47,8 +105,10 @@ impl ClaudeWorker {
             client: reqwest::Client::new(),
             api_key,
             system_prompt,
+            summary: String::new(),
+            messages: Default::default(),
             tool_executor,
-            request_rx,
+            input_rx,
             stop_rx,
         })
     }
@@ -57,18 +117,29 @@ impl ClaudeWorker {
     pub async fn run(mut self) {
         loop {
             tokio::select! {
-                request = self.request_rx.recv() => {
-                    let Some(request) = request else {
+                input = self.input_rx.recv() => {
+                    let Some(input) = input else {
                         // Channel closed, exit
                         break;
                     };
-                    let result = self.handle_request(&request.prompt).await;
-                    // If handle_request was interrupted by stop request, go on to drain the queues
-                    if matches!(result, Err(ClaudeError::StopRequested)) {
-                        self.handle_stop();
+                    match input {
+                        Input::Chat(msg) => {
+                            let (mc, maybe_sender) = msg.into_content_and_sender();
+                            self.messages.push(mc);
+                            if let Some(sender) = maybe_sender {
+                                let result = self.handle_request().await;
+                                // If handle_request was interrupted by stop request, go on to drain the queues
+                                if matches!(result, Err(ClaudeError::StopRequested)) {
+                                    self.handle_stop();
+                                }
+                                // Ignore send errors - the caller may have dropped the receiver
+                                let _ = sender.send(result);
+                            }
+                        },
+                        Input::Compact => {
+                            self.handle_compact().await;
+                        }
                     }
-                    // Ignore send errors - the caller may have dropped the receiver
-                    let _ = request.result_sender.send(result);
                 }
                 _ = self.stop_rx.recv() => {
                     self.handle_stop();
@@ -82,9 +153,18 @@ impl ClaudeWorker {
         // Drain the stop_rx queue
         while self.stop_rx.try_recv().is_ok() {}
 
-        // Drain the request_rx queue and send StopRequested to each
-        while let Ok(request) = self.request_rx.try_recv() {
-            let _ = request.result_sender.send(Err(ClaudeError::StopRequested));
+        // Drain the input_rx queue and send StopRequested to each prompt request
+        while let Ok(input) = self.input_rx.try_recv() {
+            match input {
+                Input::Chat(msg) => {
+                    let (mc, maybe_sender) = msg.into_content_and_sender();
+                    self.messages.push(mc);
+                    if let Some(sender) = maybe_sender {
+                        let _ = sender.send(Err(ClaudeError::StopRequested));
+                    }
+                }
+                Input::Compact => {}
+            }
         }
     }
 
@@ -97,16 +177,25 @@ impl ClaudeWorker {
         }
     }
 
+    /// Perform compaction
+    async fn handle_compact(&mut self) {
+        // FIXME: we should actually try to summarize messages using an api request, and then store it, before tossing messages
+        self.messages.clear();
+    }
+
     /// Handle a single request to the Claude API.
-    async fn handle_request(&mut self, prompt: &str) -> Result<String, ClaudeError> {
+    async fn handle_request(&mut self) -> Result<String, ClaudeError> {
         let max_iterations = self.config.claude_max_iterations;
 
         // Get tools from the executor if still alive
         let executor = self.tool_executor.upgrade();
         let tools = executor.as_ref().map(|te| te.tools()).unwrap_or_default();
-        let mut messages = vec![MessageContent::user(prompt)];
 
-        info!("Claude request: {}", prompt);
+        if let Some(last) = self.messages.last() {
+            if let Some(ContentBlock::Text { text, .. }) = last.content.first() {
+                info!("Claude request: {}", text);
+            }
+        }
 
         for iteration in 0..max_iterations {
             // Check for stop before making API call
@@ -116,7 +205,7 @@ impl ClaudeWorker {
                 model: &self.config.claude_model,
                 max_tokens: self.config.claude_max_tokens,
                 system: &self.system_prompt,
-                messages: messages.clone(),
+                messages: &self.messages,
                 tools: tools.clone(),
             };
 
@@ -142,14 +231,15 @@ impl ClaudeWorker {
             );
 
             // Check if we need to handle tool use
-            if response.stop_reason == "tool_use" {
+            if response.stop_reason.as_ref() == "tool_use" {
                 // Try to get a strong reference to the executor
                 let Some(executor) = self.tool_executor.upgrade() else {
                     return Err(ClaudeError::ToolExecutorGone);
                 };
 
                 // Add assistant's response to messages
-                messages.push(MessageContent::assistant(response.content.clone()));
+                self.messages
+                    .push(MessageContent::assistant(response.content.clone()));
 
                 // Execute each tool use and collect results
                 for block in &response.content {
@@ -168,7 +258,11 @@ impl ClaudeWorker {
                                 (err, true)
                             }
                         };
-                        messages.push(MessageContent::tool_result(id.clone(), result, is_error));
+                        self.messages.push(MessageContent::tool_result(
+                            id.to_string(),
+                            result,
+                            is_error,
+                        ));
                     }
                 }
 
@@ -182,7 +276,7 @@ impl ClaudeWorker {
                 .content
                 .into_iter()
                 .filter_map(|block| {
-                    if let ContentBlock::Text { text } = block {
+                    if let ContentBlock::Text { text, .. } = block {
                         Some(text)
                     } else {
                         None
@@ -205,7 +299,7 @@ struct MessagesRequest<'a> {
     model: &'a str,
     max_tokens: u32,
     system: &'a str,
-    messages: Vec<MessageContent>,
+    messages: &'a [MessageContent],
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<Tool>,
 }
@@ -213,33 +307,24 @@ struct MessagesRequest<'a> {
 /// A message in the conversation (can have multiple content blocks).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct MessageContent {
-    role: String,
+    role: Box<str>,
     content: Vec<ContentBlock>,
 }
 
 impl MessageContent {
-    fn user(text: &str) -> Self {
-        Self {
-            role: "user".to_owned(),
-            content: vec![ContentBlock::Text {
-                text: text.to_owned(),
-            }],
-        }
-    }
-
     fn assistant(blocks: Vec<ContentBlock>) -> Self {
         Self {
-            role: "assistant".to_owned(),
+            role: "assistant".into(),
             content: blocks,
         }
     }
 
     fn tool_result(tool_use_id: String, content: String, is_error: bool) -> Self {
         Self {
-            role: "user".to_owned(),
+            role: "user".into(),
             content: vec![ContentBlock::ToolResult {
-                tool_use_id,
-                content,
+                tool_use_id: tool_use_id.into(),
+                content: content.into(),
                 is_error: if is_error { Some(true) } else { None },
             }],
         }
@@ -251,16 +336,18 @@ impl MessageContent {
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ContentBlock {
     Text {
-        text: String,
+        text: Box<str>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timestamp: Option<DateTime<Utc>>,
     },
     ToolUse {
-        id: String,
-        name: String,
+        id: Box<str>,
+        name: Box<str>,
         input: Value,
     },
     ToolResult {
-        tool_use_id: String,
-        content: String,
+        tool_use_id: Box<str>,
+        content: Box<str>,
         #[serde(skip_serializing_if = "Option::is_none")]
         is_error: Option<bool>,
     },
@@ -270,7 +357,7 @@ enum ContentBlock {
 #[derive(Debug, Deserialize)]
 struct MessagesResponse {
     content: Vec<ContentBlock>,
-    stop_reason: String,
+    stop_reason: Box<str>,
 }
 
 /// Error response from the Claude API.
@@ -281,5 +368,5 @@ struct ErrorResponse {
 
 #[derive(Deserialize)]
 struct ApiErrorDetail {
-    message: String,
+    message: Box<str>,
 }
