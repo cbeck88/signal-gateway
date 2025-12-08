@@ -197,10 +197,7 @@ impl ClaudeApi {
 
         // Get tools from the executor if still alive
         let executor = self.tool_executor.upgrade();
-        let tools = executor
-            .as_ref()
-            .map(|te| te.tools())
-            .unwrap_or_default();
+        let tools = executor.as_ref().map(|te| te.tools()).unwrap_or_default();
         let mut messages = vec![MessageContent::user(prompt)];
 
         info!("Claude request: {}", prompt);

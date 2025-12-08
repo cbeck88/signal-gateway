@@ -22,7 +22,10 @@ use http::{Method, Request, Response, StatusCode};
 use http_body::Body;
 use http_body_util::BodyExt;
 use prometheus_http_client::{AlertStatus, ExtractLabels};
-use std::{fmt::Write, net::SocketAddr, path::PathBuf, sync::Arc, sync::Mutex, sync::OnceLock, sync::Weak, time::Duration};
+use std::{
+    fmt::Write, net::SocketAddr, path::PathBuf, sync::Arc, sync::Mutex, sync::OnceLock, sync::Weak,
+    time::Duration,
+};
 use tokio::{
     join,
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},

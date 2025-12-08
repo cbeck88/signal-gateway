@@ -479,10 +479,9 @@ mod tests {
     #[test]
     fn test_log_filter_combined() {
         // msg_contains AND module_equals must both match
-        let filter: LogFilter = serde_json::from_str(
-            r#"{"msg_contains": "error", "module_equals": "test::module"}"#,
-        )
-        .unwrap();
+        let filter: LogFilter =
+            serde_json::from_str(r#"{"msg_contains": "error", "module_equals": "test::module"}"#)
+                .unwrap();
         assert!(filter.matches(&make_log_msg("an error occurred")));
 
         // Wrong module
