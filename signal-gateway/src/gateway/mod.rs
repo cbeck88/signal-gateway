@@ -144,6 +144,9 @@ enum GatewayCommand {
         #[conf(repeat, pos)]
         prompt: Vec<String>,
     },
+    /// Stop current Claude request
+    #[conf(name = "cs", alias = "CS")]
+    ClaudeStop,
 }
 
 /// Parse a gateway command from a string (with or without leading /)
@@ -699,6 +702,15 @@ impl Gateway {
                     Ok(response) => Ok(AdminMessageResponse::new(response)),
                     Err(err) => Err((500, err.to_string().into())),
                 }
+            }
+            GatewayCommand::ClaudeStop => {
+                let claude = self
+                    .claude
+                    .get()
+                    .ok_or_else(|| (501u16, "claude was not configured".into()))?;
+
+                claude.request_stop();
+                Ok(AdminMessageResponse::new("stop requested"))
             }
         }
     }

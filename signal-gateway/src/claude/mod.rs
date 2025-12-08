@@ -73,9 +73,9 @@ pub enum ClaudeError {
     /// Worker has shut down.
     #[error("worker has shut down")]
     WorkerGone,
-    /// Worker returned an error.
-    #[error("{0}")]
-    WorkerError(String),
+    /// Stop was requested.
+    #[error("stop requested")]
+    StopRequested,
 }
 
 /// Claude API client.
@@ -84,6 +84,7 @@ pub enum ClaudeError {
 /// concurrent API calls.
 pub struct ClaudeApi {
     request_tx: mpsc::Sender<ClaudeRequest>,
+    stop_tx: mpsc::Sender<()>,
     #[allow(dead_code)]
     worker_handle: tokio::task::JoinHandle<()>,
 }
@@ -187,8 +188,9 @@ impl ClaudeApi {
         tool_executor: Weak<dyn ToolExecutor>,
     ) -> Result<Self, ClaudeError> {
         let (request_tx, request_rx) = mpsc::channel(REQUEST_QUEUE_SIZE);
+        let (stop_tx, stop_rx) = mpsc::channel(REQUEST_QUEUE_SIZE);
 
-        let worker = ClaudeWorker::new(config, tool_executor, request_rx)?;
+        let worker = ClaudeWorker::new(config, tool_executor, request_rx, stop_rx)?;
 
         let worker_handle = tokio::spawn(async move {
             worker.run().await;
@@ -197,6 +199,7 @@ impl ClaudeApi {
 
         Ok(Self {
             request_tx,
+            stop_tx,
             worker_handle,
         })
     }
@@ -217,9 +220,16 @@ impl ClaudeApi {
             .try_send(request)
             .map_err(|_| ClaudeError::QueueFull)?;
 
-        result_rx
-            .await
-            .map_err(|_| ClaudeError::WorkerGone)?
-            .map_err(ClaudeError::WorkerError)
+        // result_rx.await has type Result<Result<String, ClaudeError>, RecvError>
+        // The outer Result is for channel errors, the inner is the actual response
+        result_rx.await.map_err(|_| ClaudeError::WorkerGone)?
+    }
+
+    /// Request the worker to stop processing.
+    ///
+    /// This will cause the current request (if any) to be interrupted at the
+    /// next opportunity, and all pending requests to receive `StopRequested` errors.
+    pub fn request_stop(&self) {
+        let _ = self.stop_tx.try_send(());
     }
 }

@@ -11,7 +11,7 @@ use tracing::info;
 /// A request to be processed by the Claude worker.
 pub struct ClaudeRequest {
     pub prompt: String,
-    pub result_sender: oneshot::Sender<Result<String, String>>,
+    pub result_sender: oneshot::Sender<Result<String, ClaudeError>>,
 }
 
 /// Background worker that processes Claude API requests serially.
@@ -22,6 +22,7 @@ pub struct ClaudeWorker {
     system_prompt: String,
     tool_executor: Weak<dyn ToolExecutor>,
     request_rx: mpsc::Receiver<ClaudeRequest>,
+    stop_rx: mpsc::Receiver<()>,
 }
 
 impl ClaudeWorker {
@@ -32,6 +33,7 @@ impl ClaudeWorker {
         config: ClaudeConfig,
         tool_executor: Weak<dyn ToolExecutor>,
         request_rx: mpsc::Receiver<ClaudeRequest>,
+        stop_rx: mpsc::Receiver<()>,
     ) -> Result<Self, ClaudeError> {
         let api_key = std::fs::read_to_string(&config.api_key_file)
             .map_err(ClaudeError::ApiKeyRead)?
@@ -48,23 +50,56 @@ impl ClaudeWorker {
             system_prompt,
             tool_executor,
             request_rx,
+            stop_rx,
         })
     }
 
     /// Run the worker loop, processing requests serially.
     pub async fn run(mut self) {
-        while let Some(request) = self.request_rx.recv().await {
-            let result = self
-                .handle_request(&request.prompt)
-                .await
-                .map_err(|e| e.to_string());
-            // Ignore send errors - the caller may have dropped the receiver
-            let _ = request.result_sender.send(result);
+        loop {
+            tokio::select! {
+                request = self.request_rx.recv() => {
+                    let Some(request) = request else {
+                        // Channel closed, exit
+                        break;
+                    };
+                    let result = self.handle_request(&request.prompt).await;
+                    // If handle_request was interrupted by stop request, go on to drain the queues
+                    if matches!(result, Err(ClaudeError::StopRequested)) {
+                        self.handle_stop();
+                    }
+                    // Ignore send errors - the caller may have dropped the receiver
+                    let _ = request.result_sender.send(result);
+                }
+                _ = self.stop_rx.recv() => {
+                    self.handle_stop();
+                }
+            }
+        }
+    }
+
+    /// Handle a stop request by draining queues and sending errors to pending requests.
+    fn handle_stop(&mut self) {
+        // Drain the stop_rx queue
+        while self.stop_rx.try_recv().is_ok() {}
+
+        // Drain the request_rx queue and send StopRequested to each
+        while let Ok(request) = self.request_rx.try_recv() {
+            let _ = request.result_sender.send(Err(ClaudeError::StopRequested));
+        }
+    }
+
+    /// Check if stop has been requested.
+    fn check_stop(&mut self) -> Result<(), ClaudeError> {
+        match self.stop_rx.try_recv() {
+            Ok(()) => Err(ClaudeError::StopRequested),
+            Err(mpsc::error::TryRecvError::Empty) => Ok(()),
+            Err(mpsc::error::TryRecvError::Disconnected) => Err(ClaudeError::StopRequested),
         }
     }
 
     /// Handle a single request to the Claude API.
-    async fn handle_request(&self, prompt: &str) -> Result<String, ClaudeError> {
+    async fn handle_request(&mut self, prompt: &str) -> Result<String, ClaudeError> {
         let max_iterations = self.config.claude_max_iterations;
 
         // Get tools from the executor if still alive
@@ -75,6 +110,9 @@ impl ClaudeWorker {
         info!("Claude request: {}", prompt);
 
         for iteration in 0..max_iterations {
+            // Check for stop before making API call
+            self.check_stop()?;
+
             let request_body = MessagesRequest {
                 model: &self.config.claude_model,
                 max_tokens: self.config.claude_max_tokens,
@@ -117,6 +155,9 @@ impl ClaudeWorker {
                 // Execute each tool use and collect results
                 for block in &response.content {
                     if let ContentBlock::ToolUse { id, name, input } = block {
+                        // Check for stop before each tool use
+                        self.check_stop()?;
+
                         info!("Claude tool use: {}({})", name, input);
                         let (result, is_error) = match executor.execute(name, input).await {
                             Ok(result) => {
