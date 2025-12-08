@@ -158,6 +158,21 @@ fn parse_gateway_command(s: &str) -> Result<GatewayCommand, String> {
         return Err("Empty command".to_string());
     }
 
+    // Special case for /c command: take everything after "c " as a single prompt
+    // This avoids issues with dashes being interpreted as flags
+    if s.eq_ignore_ascii_case("c") {
+        return Err("Empty prompt".to_string());
+    }
+    if let Some(prompt) = s.strip_prefix("c ").or_else(|| s.strip_prefix("C ")) {
+        let prompt = prompt.trim();
+        if prompt.is_empty() {
+            return Err("Empty prompt".to_string());
+        }
+        return Ok(GatewayCommand::Claude {
+            prompt: vec![prompt.to_string()],
+        });
+    }
+
     // Parse using Conf, treating the input as command line arguments
     // Prepend a dummy program name since Conf expects argv[0]
     let args = std::iter::once("signal-gateway")
@@ -953,5 +968,67 @@ mod tests {
         // Test empty command
         assert!(parse_gateway_command("/").is_err());
         assert!(parse_gateway_command("").is_err());
+    }
+
+    #[test]
+    fn test_parse_claude_command() {
+        // Simple text - now captured as single string
+        let cmd = parse_gateway_command("/c hello world").unwrap();
+        if let GatewayCommand::Claude { prompt } = cmd {
+            assert_eq!(prompt, vec!["hello world"]);
+        } else {
+            panic!("Expected Claude command");
+        }
+
+        // Paragraph of text
+        let cmd = parse_gateway_command("/c This is a longer prompt with multiple words").unwrap();
+        if let GatewayCommand::Claude { prompt } = cmd {
+            assert_eq!(prompt, vec!["This is a longer prompt with multiple words"]);
+        } else {
+            panic!("Expected Claude command");
+        }
+
+        // Text with double dash - now preserved
+        let cmd = parse_gateway_command("/c hello -- world").unwrap();
+        if let GatewayCommand::Claude { prompt } = cmd {
+            assert_eq!(prompt, vec!["hello -- world"]);
+        } else {
+            panic!("Expected Claude command");
+        }
+
+        // Text with flag-like content - now works
+        let cmd = parse_gateway_command("/c what does -f mean").unwrap();
+        if let GatewayCommand::Claude { prompt } = cmd {
+            assert_eq!(prompt, vec!["what does -f mean"]);
+        } else {
+            panic!("Expected Claude command");
+        }
+
+        let cmd = parse_gateway_command("/c what does --flag mean").unwrap();
+        if let GatewayCommand::Claude { prompt } = cmd {
+            assert_eq!(prompt, vec!["what does --flag mean"]);
+        } else {
+            panic!("Expected Claude command");
+        }
+
+        // Text with dashes in words
+        let cmd = parse_gateway_command("/c explain self-documenting code").unwrap();
+        if let GatewayCommand::Claude { prompt } = cmd {
+            assert_eq!(prompt, vec!["explain self-documenting code"]);
+        } else {
+            panic!("Expected Claude command");
+        }
+
+        // Uppercase /C works too
+        let cmd = parse_gateway_command("/C hello").unwrap();
+        if let GatewayCommand::Claude { prompt } = cmd {
+            assert_eq!(prompt, vec!["hello"]);
+        } else {
+            panic!("Expected Claude command");
+        }
+
+        // Empty prompt should fail
+        assert!(parse_gateway_command("/c ").is_err());
+        assert!(parse_gateway_command("/c").is_err()); // No space, falls through to conf parser
     }
 }
