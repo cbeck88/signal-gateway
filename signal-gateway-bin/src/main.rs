@@ -2,7 +2,7 @@
 
 #![deny(missing_docs)]
 
-use conf::{Conf, Subcommands};
+use conf::Conf;
 use hyper::service::service_fn;
 use hyper_util::{rt::TokioIo, server::conn::auto};
 use signal_gateway::{CommandRouter, Gateway, GatewayConfig, Handling};
@@ -20,14 +20,6 @@ use syslog::SyslogConfig;
 
 pub mod json;
 use json::JsonConfig;
-
-/// Handler for admin messages that don't match built-in commands.
-#[derive(Subcommands, Debug)]
-#[conf(serde)]
-pub enum AdminHandlerCommand {
-    /// Forward unhandled admin messages to an HTTP endpoint.
-    AdminHttp(AdminHttpConfig),
-}
 
 /// Top-level configuration for signal-gateway.
 #[derive(Conf, Debug)]
@@ -48,9 +40,9 @@ pub struct Config {
     syslog: Option<SyslogConfig>,
     #[conf(flatten, prefix)]
     json: Option<JsonConfig>,
-    /// Optional handler for admin messages that don't match built-in commands.
-    #[conf(subcommands)]
-    admin_handler: Option<AdminHandlerCommand>,
+    /// Optional HTTP endpoint for forwarding admin messages.
+    #[conf(flatten, prefix)]
+    admin_http: Option<AdminHttpConfig>,
     #[conf(flatten, serde(flatten))]
     gateway: GatewayConfig,
 }
@@ -115,12 +107,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("--help", Handling::Help)
         .route("-h", Handling::Help);
 
-    // Add custom handler for "#" prefix if configured
-    if let Some(admin_handler) = config.admin_handler {
-        let handler = match admin_handler {
-            AdminHandlerCommand::AdminHttp(config) => config.into_handler(),
-        };
-        router_builder = router_builder.route("#", Handling::Custom(handler));
+    // Add admin HTTP handler with its configured prefix
+    if let Some(admin_http) = config.admin_http {
+        let prefix = admin_http.command_prefix.clone();
+        let handler = admin_http.into_handler();
+        router_builder = router_builder.route(prefix, Handling::Custom(handler));
     }
 
     // Add gateway commands for "/" prefix

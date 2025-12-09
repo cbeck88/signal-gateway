@@ -15,10 +15,13 @@ use std::time::Duration;
 #[conf(serde)]
 pub struct AdminHttpConfig {
     /// URL to POST admin commands to
-    #[conf(long, env = "ADMIN_HTTP_URL")]
+    #[conf(long, env)]
     pub url: String,
+    /// Command prefix that routes messages to this handler
+    #[conf(long, env, default_value = "#")]
+    pub command_prefix: String,
     /// Timeout for the HTTP request
-    #[conf(long, env = "ADMIN_HTTP_TIMEOUT", default_value = "5s", value_parser = conf_extra::parse_duration)]
+    #[conf(long, env, default_value = "5s", value_parser = conf_extra::parse_duration, serde(use_value_parser))]
     pub timeout: Duration,
 }
 
