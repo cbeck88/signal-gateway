@@ -63,7 +63,8 @@ pub struct SourcedAdminMessageResponse {
 }
 
 /// Result type for sourced admin message responses.
-type SourcedMessageResult = Result<SourcedAdminMessageResponse, (u16, Box<dyn Error + Send + Sync>)>;
+type SourcedMessageResult =
+    Result<SourcedAdminMessageResponse, (u16, Box<dyn Error + Send + Sync>)>;
 
 /// Configuration for the gateway.
 #[derive(Conf, Debug)]
