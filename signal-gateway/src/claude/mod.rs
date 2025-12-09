@@ -83,14 +83,14 @@ pub enum ClaudeError {
 ///
 /// Requests are processed serially by a background worker to prevent
 /// concurrent API calls.
-pub struct ClaudeApi {
+pub struct ClaudeAgent {
     input_tx: mpsc::Sender<Input>,
     stop_tx: mpsc::Sender<()>,
     #[allow(dead_code)]
     worker_handle: tokio::task::JoinHandle<()>,
 }
 
-impl ClaudeApi {
+impl ClaudeAgent {
     /// Create a new Claude API client from configuration.
     ///
     /// Reads the API key and system prompt from the configured files.

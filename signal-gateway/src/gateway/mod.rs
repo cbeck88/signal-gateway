@@ -4,7 +4,7 @@
 use crate::signal_jsonrpc::connect_ipc;
 use crate::{
     alertmanager::AlertPost,
-    claude::{ClaudeApi, ClaudeConfig, SentBy, Tool, ToolExecutor, ToolResult},
+    claude::{ClaudeAgent, ClaudeConfig, SentBy, Tool, ToolExecutor, ToolResult},
     log_message::{LogMessage, Origin},
     message_handler::{AdminMessage, AdminMessageResponse, Context, MessageHandlerResult},
     prometheus::{Prometheus, PrometheusConfig},
@@ -251,7 +251,7 @@ pub struct Gateway {
     command_router: CommandRouter,
     /// Claude API client for AI-powered responses.
     /// Initialized after Arc creation so it can hold a weak reference back to Gateway.
-    claude: OnceLock<Box<ClaudeApi>>,
+    claude: OnceLock<Box<ClaudeAgent>>,
 }
 
 impl Gateway {
@@ -287,7 +287,7 @@ impl Gateway {
 
         // Initialize Claude with a weak reference back to the gateway
         if let Some(cc) = claude_config {
-            let claude = ClaudeApi::new(cc, Arc::downgrade(&gateway) as Weak<dyn ToolExecutor>)
+            let claude = ClaudeAgent::new(cc, Arc::downgrade(&gateway) as Weak<dyn ToolExecutor>)
                 .expect("Invalid claude config");
             gateway
                 .claude
