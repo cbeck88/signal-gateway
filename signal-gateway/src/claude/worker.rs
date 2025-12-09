@@ -191,11 +191,10 @@ impl ClaudeWorker {
         let executor = self.tool_executor.upgrade();
         let tools = executor.as_ref().map(|te| te.tools()).unwrap_or_default();
 
-        if let Some(last) = self.messages.last() {
-            if let Some(ContentBlock::Text { text, .. }) = last.content.first() {
+        if let Some(last) = self.messages.last()
+            && let Some(ContentBlock::Text { text, .. }) = last.content.first() {
                 info!("Claude request: {}", text);
             }
-        }
 
         for iteration in 0..max_iterations {
             // Check for stop before making API call

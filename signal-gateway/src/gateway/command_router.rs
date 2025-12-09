@@ -19,15 +19,11 @@ pub enum Handling {
 ///
 /// The router contains an ordered list of (prefix, handling) pairs. When routing,
 /// it finds the first prefix that matches the start of the message.
+#[derive(Default)]
 pub struct CommandRouter {
     routes: Vec<(String, Handling)>,
 }
 
-impl Default for CommandRouter {
-    fn default() -> Self {
-        Self { routes: Vec::new() }
-    }
-}
 
 impl CommandRouter {
     /// Create a builder for constructing a CommandRouter.
