@@ -7,9 +7,9 @@ edition.workspace = true
 workspace = true
 
 [features]
-default = ["plot"]
+default = ["plot", "rustls-tls"]
 plot = ["prometheus-http-client/plot", "dep:chrono-tz", "dep:rand", "dep:walkdir"]
-rustls-tls = ["prometheus-http-client/rustls-tls"]
+rustls-tls = ["prometheus-http-client/rustls-tls", "reqwest/rustls-tls"]
 
 [dependencies]
 prometheus-http-client = { workspace = true, default-features = false }

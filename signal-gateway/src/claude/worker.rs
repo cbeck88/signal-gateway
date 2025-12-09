@@ -29,13 +29,22 @@ pub enum SentBy {
 }
 
 impl SentBy {
-    fn role(&self) -> &str {
+    /// Returns the API role: "assistant" for Claude, "user" for everything else.
+    fn api_role(&self) -> &'static str {
         match self {
-            Self::UserToSystem => "user (speaking to system)",
-            Self::UserToClaude => "user (speaking to assistant)",
             Self::Claude => "assistant",
-            Self::System => "system",
-            Self::AlertManager => "alertmanager",
+            _ => "user",
+        }
+    }
+
+    /// Returns a prefix to prepend to message text for context.
+    fn prefix(&self) -> Option<&'static str> {
+        match self {
+            Self::UserToSystem => Some("[user to system]"),
+            Self::UserToClaude => None, // No prefix needed for direct user messages
+            Self::Claude => None,
+            Self::System => Some("[system]"),
+            Self::AlertManager => Some("[alertmanager]"),
         }
     }
 }
@@ -58,12 +67,14 @@ pub struct ChatMessage {
 
 impl ChatMessage {
     fn into_content_and_sender(self) -> (MessageContent, Option<ResultSender>) {
+        let ts = self.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ");
+        let text = match self.sent_by.prefix() {
+            Some(prefix) => format!("[{}] {} {}", ts, prefix, self.text).into(),
+            None => format!("[{}] {}", ts, self.text).into(),
+        };
         let mc = MessageContent {
-            role: self.sent_by.role().into(),
-            content: vec![ContentBlock::Text {
-                text: self.text,
-                timestamp: Some(self.timestamp),
-            }],
+            role: self.sent_by.api_role().into(),
+            content: vec![ContentBlock::Text { text }],
         };
 
         (mc, self.result_sender)
@@ -412,11 +423,7 @@ impl MessageContent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ContentBlock {
-    Text {
-        text: Box<str>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        timestamp: Option<DateTime<Utc>>,
-    },
+    Text { text: Box<str> },
     ToolUse {
         id: Box<str>,
         name: Box<str>,
