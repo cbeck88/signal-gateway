@@ -6,6 +6,7 @@ use conf::Conf;
 use hyper::service::service_fn;
 use hyper_util::{rt::TokioIo, server::conn::auto};
 use signal_gateway::{CommandRouter, Gateway, GatewayConfig, Handling};
+use signal_gateway_app_code::AppCodeTools;
 use std::{env, fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -14,6 +15,9 @@ use tracing_subscriber::EnvFilter;
 
 mod admin_http;
 use admin_http::AdminHttpConfig;
+
+mod app_code;
+use app_code::AppCodeConfigExt;
 
 mod syslog;
 use syslog::SyslogConfig;
@@ -43,6 +47,9 @@ pub struct Config {
     /// Optional HTTP endpoint for forwarding admin messages.
     #[conf(flatten, prefix)]
     admin_http: Option<AdminHttpConfig>,
+    /// Application source code configurations for Claude tools.
+    #[conf(long, env, value_parser = serde_json::from_str)]
+    app_code: Vec<AppCodeConfigExt>,
     #[conf(flatten, serde(flatten))]
     gateway: GatewayConfig,
 }
@@ -123,11 +130,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let command_router = router_builder.build();
-    let gateway = Gateway::builder(config.gateway)
+
+    // Build AppCode tools if configured
+    let app_code_tools = if !config.app_code.is_empty() {
+        let mut apps = Vec::new();
+        for app_config in config.app_code {
+            let name = app_config.config.name.clone();
+            match app_config.into_app_code() {
+                Ok(app) => apps.push(app),
+                Err(e) => {
+                    error!("Failed to initialize app code '{name}': {e}");
+                    return Err(e.into());
+                }
+            }
+        }
+        Some(Arc::new(AppCodeTools::new(apps)))
+    } else {
+        None
+    };
+
+    let mut gateway_builder = Gateway::builder(config.gateway)
         .with_cancellation_token(token.clone())
-        .with_command_router(command_router)
-        .build()
-        .await;
+        .with_command_router(command_router);
+
+    if let Some(tools) = app_code_tools {
+        gateway_builder = gateway_builder.with_tools(tools);
+    }
+
+    let gateway = gateway_builder.build().await;
 
     let listener = TcpListener::bind(config.http_listen_addr).await.unwrap();
     info!("Listening for http on {}", config.http_listen_addr);

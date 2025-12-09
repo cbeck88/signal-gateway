@@ -4,7 +4,6 @@
 //! tarballs from GitHub and caching them in memory.
 
 use async_trait::async_trait;
-use conf::Conf;
 use flate2::read::GzDecoder;
 use regex::Regex;
 use serde::Deserialize;
@@ -18,7 +17,8 @@ use tokio::sync::{Mutex, MutexGuard};
 use tracing::{error, info, warn};
 
 /// A GitHub repository identifier (owner/repo).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(try_from = "String")]
 pub struct GitHubRepo {
     /// The repository owner (user or organization).
     pub owner: String,
@@ -44,18 +44,22 @@ impl FromStr for GitHubRepo {
     }
 }
 
+impl TryFrom<String> for GitHubRepo {
+    type Error = String;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        s.parse()
+    }
+}
+
 /// Configuration for an application's source code access.
-#[derive(Clone, Conf, Debug)]
-#[conf(serde)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct AppCodeConfig {
     /// Name of the application (used to identify it in tool calls).
-    #[conf(long, env)]
     pub name: String,
     /// GitHub repository in "owner/repo" format.
-    #[conf(long, env, serde(use_value_parser))]
     pub github: GitHubRepo,
     /// Path to file containing the GitHub personal access token.
-    #[conf(long, env)]
     pub token_file: PathBuf,
 }
 

@@ -10,10 +10,9 @@ workspace = true
 signal-gateway = { path = "../signal-gateway", default-features = false }
 
 async-trait = { workspace = true }
-conf = { workspace = true }
 flate2 = { workspace = true }
 regex = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["rustls-tls"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tar = { workspace = true }

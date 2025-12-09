@@ -17,6 +17,7 @@ rustls-tls = ["signal-gateway/rustls-tls"]
 
 [dependencies]
 signal-gateway = { path = "../signal-gateway" }
+signal-gateway-app-code = { path = "../signal-gateway-app-code" }
 
 async-trait = { workspace = true }
 chrono = { workspace = true }
@@ -26,6 +27,7 @@ dotenvy = { workspace = true }
 hyper = { workspace = true }
 hyper-util = { workspace = true }
 reqwest = { workspace = true }
+url = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 syslog_rfc5424 = { workspace = true }
