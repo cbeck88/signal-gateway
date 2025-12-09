@@ -75,7 +75,7 @@ pub struct ClaudeWorker {
     config: ClaudeConfig,
     client: reqwest::Client,
     api_key: String,
-    system_prompt: String,
+    system_prompts: Vec<String>,
     // FIXME: use this and append to system prompt within <summary> </summary> tags
     #[allow(dead_code)]
     summary: String,
@@ -88,7 +88,7 @@ pub struct ClaudeWorker {
 impl ClaudeWorker {
     /// Create a new Claude worker.
     ///
-    /// Reads the API key and system prompt from the configured files.
+    /// Reads the API key and system prompts from the configured files.
     pub fn new(
         config: ClaudeConfig,
         tool_executor: Weak<dyn ToolExecutor>,
@@ -100,14 +100,20 @@ impl ClaudeWorker {
             .trim()
             .to_owned();
 
-        let system_prompt = std::fs::read_to_string(&config.system_prompt_file)
-            .map_err(ClaudeError::SystemPromptRead)?;
+        let system_prompts: Vec<String> = config
+            .system_prompt_files
+            .iter()
+            .map(|path| {
+                std::fs::read_to_string(path)
+                    .map_err(|e| ClaudeError::SystemPromptRead(path.clone(), e))
+            })
+            .collect::<Result<_, _>>()?;
 
         Ok(Self {
             config,
             client: reqwest::Client::new(),
             api_key,
-            system_prompt,
+            system_prompts,
             summary: String::new(),
             messages: Default::default(),
             tool_executor,
@@ -211,6 +217,21 @@ impl ClaudeWorker {
             info!("Claude request: {}", text);
         }
 
+        // Build system content blocks, caching only the last one
+        let system: Vec<SystemContent> = self
+            .system_prompts
+            .iter()
+            .enumerate()
+            .map(|(i, text)| {
+                let content = SystemContent::text(text);
+                if i == self.system_prompts.len() - 1 {
+                    content.cached()
+                } else {
+                    content
+                }
+            })
+            .collect();
+
         for iteration in 0..max_iterations {
             // Check for stop before making API call
             self.check_stop()?;
@@ -218,7 +239,7 @@ impl ClaudeWorker {
             let request_body = MessagesRequest {
                 model: &self.config.claude_model,
                 max_tokens: self.config.claude_max_tokens,
-                system: &self.system_prompt,
+                system: &system,
                 messages: &self.messages,
                 tools: tools.clone(),
             };
@@ -314,10 +335,50 @@ impl ClaudeWorker {
 struct MessagesRequest<'a> {
     model: &'a str,
     max_tokens: u32,
-    system: &'a str,
+    system: &'a [SystemContent],
     messages: &'a [MessageContent],
     #[serde(skip_serializing_if = "Vec::is_empty")]
     tools: Vec<Tool>,
+}
+
+/// A content block in the system prompt array.
+#[derive(Clone, Serialize)]
+struct SystemContent {
+    #[serde(rename = "type")]
+    content_type: &'static str,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControl>,
+}
+
+impl SystemContent {
+    fn text(text: impl Into<String>) -> Self {
+        Self {
+            content_type: "text",
+            text: text.into(),
+            cache_control: None,
+        }
+    }
+
+    fn cached(mut self) -> Self {
+        self.cache_control = Some(CacheControl::ephemeral());
+        self
+    }
+}
+
+/// Cache control directive for prompt caching.
+#[derive(Clone, Serialize)]
+struct CacheControl {
+    #[serde(rename = "type")]
+    cache_type: &'static str,
+}
+
+impl CacheControl {
+    fn ephemeral() -> Self {
+        Self {
+            cache_type: "ephemeral",
+        }
+    }
 }
 
 /// A message in the conversation (can have multiple content blocks).

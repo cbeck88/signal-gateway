@@ -30,14 +30,14 @@ pub struct ClaudeConfig {
     /// Path to file containing the Claude API key.
     #[conf(long, env)]
     pub api_key_file: PathBuf,
-    /// Path to file containing the system prompt.
-    #[conf(long, env)]
-    pub system_prompt_file: PathBuf,
+    /// Paths to files containing system prompt components (in order, last one is cached).
+    #[conf(repeat, long, env)]
+    pub system_prompt_files: Vec<PathBuf>,
     /// Claude API URL.
     #[conf(long, env, default_value = "https://api.anthropic.com/v1/messages")]
     pub claude_api_url: String,
     /// Claude model to use.
-    #[conf(long, env, default_value = "claude-opus-4-20250514")]
+    #[conf(long, env, default_value = "claude-sonnet-4-5-20250929")]
     pub claude_model: String,
     /// Maximum tokens in the response.
     #[conf(long, env, default_value = "1024")]
@@ -54,8 +54,8 @@ pub enum ClaudeError {
     #[error("failed to read API key file: {0}")]
     ApiKeyRead(std::io::Error),
     /// Failed to read system prompt file.
-    #[error("failed to read system prompt file: {0}")]
-    SystemPromptRead(std::io::Error),
+    #[error("failed to read system prompt file {0:?}: {1}")]
+    SystemPromptRead(PathBuf, std::io::Error),
     /// HTTP request failed.
     #[error("HTTP request failed: {0}")]
     Request(#[from] reqwest::Error),
