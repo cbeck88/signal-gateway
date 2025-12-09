@@ -161,6 +161,9 @@ enum GatewayCommand {
     /// Compact Claude's message history
     #[conf(name = "claude-compact", alias = "CLAUDE-COMPACT")]
     ClaudeCompact,
+    /// Log Claude's message buffer for debugging
+    #[conf(name = "claude-debug", alias = "CLAUDE-DEBUG")]
+    ClaudeDebug,
 }
 
 /// Parse a gateway command from a string (with or without leading /)
@@ -792,6 +795,15 @@ impl Gateway {
 
                 claude.request_compaction();
                 Ok(AdminMessageResponse::new("compaction requested"))
+            }
+            GatewayCommand::ClaudeDebug => {
+                let claude = self
+                    .claude
+                    .get()
+                    .ok_or_else(|| (501u16, "claude was not configured".into()))?;
+
+                claude.request_debug();
+                Ok(AdminMessageResponse::new("debug logged"))
             }
         }
     }

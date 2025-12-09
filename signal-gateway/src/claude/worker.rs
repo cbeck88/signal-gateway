@@ -44,6 +44,7 @@ impl SentBy {
 pub enum Input {
     Chat(ChatMessage),
     Compact,
+    Debug,
 }
 
 /// A chat message
@@ -141,6 +142,9 @@ impl ClaudeWorker {
                         Input::Compact => {
                             self.handle_compact().await;
                         }
+                        Input::Debug => {
+                            self.handle_debug();
+                        }
                     }
                 }
                 _ = self.stop_rx.recv() => {
@@ -165,7 +169,7 @@ impl ClaudeWorker {
                         let _ = sender.send(Err(ClaudeError::StopRequested));
                     }
                 }
-                Input::Compact => {}
+                Input::Compact | Input::Debug => {}
             }
         }
     }
@@ -183,6 +187,11 @@ impl ClaudeWorker {
     async fn handle_compact(&mut self) {
         // FIXME: we should actually try to summarize messages using an api request, and then store it, before tossing messages
         self.messages.clear();
+    }
+
+    /// Log the message buffer for debugging.
+    fn handle_debug(&self) {
+        info!("Claude message buffer:\n{:#?}", self.messages);
     }
 
     /// Handle a single request to the Claude API.

@@ -166,6 +166,11 @@ impl ClaudeAgent {
         let _ = self.input_tx.try_send(Input::Compact);
     }
 
+    /// Request the worker to log its message buffer for debugging.
+    pub fn request_debug(&self) {
+        let _ = self.input_tx.try_send(Input::Debug);
+    }
+
     /// Request the worker to interrupt any prompts it is responding to, discard any queued messages,
     /// and get ready to accept different prompts.
     ///
