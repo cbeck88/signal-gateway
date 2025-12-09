@@ -255,14 +255,74 @@ pub struct Gateway {
     /// Claude API client for AI-powered responses.
     /// Initialized after Arc creation so it can hold a weak reference back to Gateway.
     claude: OnceLock<Box<ClaudeAgent>>,
+    /// Additional tool executors added via the builder.
+    extra_tool_executors: Vec<Arc<dyn ToolExecutor>>,
+}
+
+/// Builder for creating a [`Gateway`] with optional additional tool executors.
+pub struct GatewayBuilder {
+    config: GatewayConfig,
+    token: Option<CancellationToken>,
+    command_router: Option<CommandRouter>,
+    extra_tool_executors: Vec<Arc<dyn ToolExecutor>>,
+}
+
+impl GatewayBuilder {
+    /// Create a new gateway builder with the given configuration.
+    pub fn new(config: GatewayConfig) -> Self {
+        Self {
+            config,
+            token: None,
+            command_router: None,
+            extra_tool_executors: Vec::new(),
+        }
+    }
+
+    /// Set the cancellation token for the gateway.
+    pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
+        self.token = Some(token);
+        self
+    }
+
+    /// Set the command router for the gateway.
+    pub fn with_command_router(mut self, router: CommandRouter) -> Self {
+        self.command_router = Some(router);
+        self
+    }
+
+    /// Add an additional tool executor to the gateway.
+    ///
+    /// Tools from these executors will be available to Claude alongside
+    /// the built-in tools (log handler, prometheus, etc.).
+    pub fn with_tools(mut self, executor: Arc<dyn ToolExecutor>) -> Self {
+        self.extra_tool_executors.push(executor);
+        self
+    }
+
+    /// Build the gateway.
+    pub async fn build(self) -> Arc<Gateway> {
+        Gateway::new_internal(
+            self.config,
+            self.token.unwrap_or_default(),
+            self.command_router.unwrap_or_default(),
+            self.extra_tool_executors,
+        )
+        .await
+    }
 }
 
 impl Gateway {
-    /// Create a new gateway with the given configuration.
-    pub async fn new(
+    /// Create a new gateway builder with the given configuration.
+    pub fn builder(config: GatewayConfig) -> GatewayBuilder {
+        GatewayBuilder::new(config)
+    }
+
+    /// Internal constructor used by `GatewayBuilder::build`.
+    async fn new_internal(
         config: GatewayConfig,
         token: CancellationToken,
         command_router: CommandRouter,
+        extra_tool_executors: Vec<Arc<dyn ToolExecutor>>,
     ) -> Arc<Self> {
         let (signal_alert_mq_tx, signal_alert_mq_rx) = unbounded_channel();
 
@@ -286,6 +346,7 @@ impl Gateway {
             log_handler,
             command_router,
             claude: OnceLock::new(),
+            extra_tool_executors,
         });
 
         // Initialize Claude with a weak reference back to the gateway
@@ -930,6 +991,9 @@ impl ToolExecutor for Gateway {
         if let Some(prometheus) = &self.prometheus {
             tools.extend(prometheus.tools());
         }
+        for executor in &self.extra_tool_executors {
+            tools.extend(executor.tools());
+        }
         tools
     }
 
@@ -942,6 +1006,12 @@ impl ToolExecutor for Gateway {
             && prometheus.has_tool(name)
         {
             return prometheus.execute(name, input).await;
+        }
+
+        for executor in &self.extra_tool_executors {
+            if executor.has_tool(name) {
+                return executor.execute(name, input).await;
+            }
         }
 
         Err(format!("unknown tool: {name}"))

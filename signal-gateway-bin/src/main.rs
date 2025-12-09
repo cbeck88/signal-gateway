@@ -123,7 +123,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let command_router = router_builder.build();
-    let gateway = Gateway::new(config.gateway, token.clone(), command_router).await;
+    let gateway = Gateway::builder(config.gateway)
+        .with_cancellation_token(token.clone())
+        .with_command_router(command_router)
+        .build()
+        .await;
 
     let listener = TcpListener::bind(config.http_listen_addr).await.unwrap();
     info!("Listening for http on {}", config.http_listen_addr);
