@@ -6,9 +6,7 @@ use crate::{
     alertmanager::AlertPost,
     claude::{ClaudeApi, ClaudeConfig, SentBy, Tool, ToolExecutor},
     log_message::{LogMessage, Origin},
-    message_handler::{
-        AdminMessage, AdminMessageResponse, Context, MessageHandler, MessageHandlerResult,
-    },
+    message_handler::{AdminMessage, AdminMessageResponse, Context, MessageHandlerResult},
     prometheus::{Prometheus, PrometheusConfig},
     signal_jsonrpc::{
         Envelope, MessageTarget, RpcClient, RpcClientError, SignalMessage, connect_tcp,
@@ -35,6 +33,9 @@ use tracing::{debug, error, info, warn};
 
 mod signal_trust_set;
 pub use signal_trust_set::SignalTrustSet;
+
+mod command_router;
+pub use command_router::{CommandRouter, CommandRouterBuilder, Handling};
 
 mod log_buffer;
 mod log_handler;
@@ -137,15 +138,8 @@ enum GatewayCommand {
     /// Show current alerts from prometheus
     #[conf(name = "alerts", alias = "ALERTS")]
     Alerts,
-    /// Ask Claude AI a question
-    #[conf(name = "c", alias = "C")]
-    Claude {
-        /// The prompt to send to Claude
-        #[conf(repeat, pos)]
-        prompt: Vec<String>,
-    },
     /// Stop current Claude request
-    #[conf(name = "cs", alias = "CS")]
+    #[conf(name = "stop", alias = "STOP")]
     ClaudeStop,
     /// Compact Claude's message history
     #[conf(name = "compact", alias = "COMPACT")]
@@ -159,21 +153,6 @@ fn parse_gateway_command(s: &str) -> Result<GatewayCommand, String> {
 
     if s.is_empty() {
         return Err("Empty command".to_string());
-    }
-
-    // Special case for /c command: take everything after "c " as a single prompt
-    // This avoids issues with dashes being interpreted as flags
-    if s.eq_ignore_ascii_case("c") {
-        return Err("Empty prompt".to_string());
-    }
-    if let Some(prompt) = s.strip_prefix("c ").or_else(|| s.strip_prefix("C ")) {
-        let prompt = prompt.trim();
-        if prompt.is_empty() {
-            return Err("Empty prompt".to_string());
-        }
-        return Ok(GatewayCommand::Claude {
-            prompt: vec![prompt.to_string()],
-        });
     }
 
     // Parse using Conf, treating the input as command line arguments
@@ -251,8 +230,8 @@ pub struct Gateway {
     prometheus: Option<Prometheus>,
     /// Log handler for processing log messages from all origins.
     log_handler: LogHandler,
-    /// Handler for admin messages that don't start with `/`
-    message_handler: Option<Box<dyn MessageHandler>>,
+    /// Command router for dispatching admin messages.
+    command_router: CommandRouter,
     /// Claude API client for AI-powered responses.
     /// Initialized after Arc creation so it can hold a weak reference back to Gateway.
     claude: OnceLock<Box<ClaudeApi>>,
@@ -263,7 +242,7 @@ impl Gateway {
     pub async fn new(
         config: GatewayConfig,
         token: CancellationToken,
-        message_handler: Option<Box<dyn MessageHandler>>,
+        command_router: CommandRouter,
     ) -> Arc<Self> {
         let (signal_alert_mq_tx, signal_alert_mq_rx) = unbounded_channel();
 
@@ -285,7 +264,7 @@ impl Gateway {
             token,
             prometheus,
             log_handler,
-            message_handler,
+            command_router,
             claude: OnceLock::new(),
         });
 
@@ -456,6 +435,11 @@ impl Gateway {
                                 })
                             );
 
+                            // If no route matched, don't send a response
+                            let Some(resp) = resp else {
+                                continue;
+                            };
+
                             let resp = resp.unwrap_or_else(|(code, msg)| {
                                 let text = format!("{code}: {msg}");
                                 error!("Message handler error: {text}");
@@ -489,53 +473,66 @@ impl Gateway {
         }
     }
 
-    // Returns Err in case of a timeout or handler error
-    // Returns Ok when success or error text is generated
-    async fn handle_signal_admin_message(&self, msg: &Envelope) -> MessageHandlerResult {
+    // Returns None if no route matched (don't send a response)
+    // Returns Some(Err) in case of a handler error
+    // Returns Some(Ok) when success or error text is generated
+    async fn handle_signal_admin_message(&self, msg: &Envelope) -> Option<MessageHandlerResult> {
         let data = msg.data_message.as_ref().unwrap();
 
-        // Admin messages starting with / are handled by gateway
-        // Other messages are passed to the configured message handler
-        if data.message.starts_with("/") {
-            // Parse the command using conf
-            let cmd = parse_gateway_command(&data.message).map_err(|err| (400u16, err.into()))?;
+        let (stripped_message, handling) = self.command_router.route(&data.message)?;
 
-            // Record this as a system command in Claude's history, unless it's a Claude
-            // prompt command (which will be recorded when we call request())
-            let is_claude = matches!(cmd, GatewayCommand::Claude { .. });
-            if !is_claude {
+        match handling {
+            Handling::Help => {
+                // Record as system command
                 if let Some(claude) = self.claude.get() {
-                    claude.record_message(
-                        SentBy::UserToSystem,
-                        &data.message,
-                        data.timestamp,
-                    );
+                    claude.record_message(SentBy::UserToSystem, &data.message, data.timestamp);
+                }
+                Some(Ok(AdminMessageResponse::new(self.command_router.help())))
+            }
+            Handling::GatewayCommand => {
+                // Parse the command using conf (stripped message has "/" prefix removed)
+                let cmd = match parse_gateway_command(stripped_message) {
+                    Ok(cmd) => cmd,
+                    Err(err) => return Some(Err((400u16, err.into()))),
+                };
+
+                // Record this as a system command in Claude's history
+                if let Some(claude) = self.claude.get() {
+                    claude.record_message(SentBy::UserToSystem, &data.message, data.timestamp);
+                }
+
+                let resp = match self.handle_gateway_command(cmd).await {
+                    Ok(resp) => resp,
+                    Err(err) => return Some(Err(err)),
+                };
+                Some(Ok(resp))
+            }
+            Handling::Claude => {
+                // Send directly to Claude (use stripped message)
+                let Some(claude) = self.claude.get() else {
+                    return Some(Err((501u16, "Claude is not configured".into())));
+                };
+
+                match claude.request(stripped_message, data.timestamp).await {
+                    Ok(response) => Some(Ok(AdminMessageResponse::new(response).from_claude())),
+                    Err(err) => Some(Err((500, err.to_string().into()))),
                 }
             }
+            Handling::Custom(handler) => {
+                // Record as system message
+                if let Some(claude) = self.claude.get() {
+                    claude.record_message(SentBy::UserToSystem, &data.message, data.timestamp);
+                }
 
-            let resp = self.handle_gateway_command(cmd, data.timestamp).await?;
-            Ok(if is_claude { resp.from_claude() } else { resp })
-        } else if let Some(handler) = &self.message_handler {
-            // Record this as a system message in Claude's history (not directed at Claude)
-            if let Some(claude) = self.claude.get() {
-                claude.record_message(
-                    SentBy::UserToSystem,
-                    &data.message,
-                    data.timestamp,
-                );
+                // Pass stripped message to custom handler
+                let admin_msg = AdminMessage {
+                    message: stripped_message.to_owned(),
+                    timestamp: data.timestamp,
+                    sender_uuid: msg.source_uuid.clone(),
+                    group_id: data.group_info.as_ref().map(|g| g.group_id.clone()),
+                };
+                Some(handler.handle_verified_signal_message(admin_msg, &GatewayContext).await)
             }
-
-            let msg = AdminMessage {
-                message: data.message.clone(),
-                timestamp: data.timestamp,
-                sender_uuid: msg.source_uuid.clone(),
-                group_id: data.group_info.as_ref().map(|g| g.group_id.clone()),
-            };
-            handler
-                .handle_verified_signal_message(msg, &GatewayContext)
-                .await
-        } else {
-            Err((501u16, "No message handler configured".into()))
         }
     }
 
@@ -601,11 +598,7 @@ impl Gateway {
         }
     }
 
-    async fn handle_gateway_command(
-        &self,
-        cmd: GatewayCommand,
-        ts_ms: u64,
-    ) -> MessageHandlerResult {
+    async fn handle_gateway_command(&self, cmd: GatewayCommand) -> MessageHandlerResult {
         match cmd {
             GatewayCommand::Log { filter } => {
                 let text = self.log_handler.format_logs(filter.as_deref()).await;
@@ -743,18 +736,6 @@ impl Gateway {
                         Ok(AdminMessageResponse::new(text))
                     }
                     Err(err) => Err((500, err)),
-                }
-            }
-            GatewayCommand::Claude { prompt } => {
-                let claude = self
-                    .claude
-                    .get()
-                    .ok_or_else(|| (501u16, "claude was not configured".into()))?;
-
-                let prompt_text = prompt.join(" ");
-                match claude.request(&prompt_text, ts_ms).await {
-                    Ok(response) => Ok(AdminMessageResponse::new(response)),
-                    Err(err) => Err((500, err.to_string().into())),
                 }
             }
             GatewayCommand::ClaudeStop => {
@@ -1016,67 +997,5 @@ mod tests {
         // Test empty command
         assert!(parse_gateway_command("/").is_err());
         assert!(parse_gateway_command("").is_err());
-    }
-
-    #[test]
-    fn test_parse_claude_command() {
-        // Simple text - now captured as single string
-        let cmd = parse_gateway_command("/c hello world").unwrap();
-        if let GatewayCommand::Claude { prompt } = cmd {
-            assert_eq!(prompt, vec!["hello world"]);
-        } else {
-            panic!("Expected Claude command");
-        }
-
-        // Paragraph of text
-        let cmd = parse_gateway_command("/c This is a longer prompt with multiple words").unwrap();
-        if let GatewayCommand::Claude { prompt } = cmd {
-            assert_eq!(prompt, vec!["This is a longer prompt with multiple words"]);
-        } else {
-            panic!("Expected Claude command");
-        }
-
-        // Text with double dash - now preserved
-        let cmd = parse_gateway_command("/c hello -- world").unwrap();
-        if let GatewayCommand::Claude { prompt } = cmd {
-            assert_eq!(prompt, vec!["hello -- world"]);
-        } else {
-            panic!("Expected Claude command");
-        }
-
-        // Text with flag-like content - now works
-        let cmd = parse_gateway_command("/c what does -f mean").unwrap();
-        if let GatewayCommand::Claude { prompt } = cmd {
-            assert_eq!(prompt, vec!["what does -f mean"]);
-        } else {
-            panic!("Expected Claude command");
-        }
-
-        let cmd = parse_gateway_command("/c what does --flag mean").unwrap();
-        if let GatewayCommand::Claude { prompt } = cmd {
-            assert_eq!(prompt, vec!["what does --flag mean"]);
-        } else {
-            panic!("Expected Claude command");
-        }
-
-        // Text with dashes in words
-        let cmd = parse_gateway_command("/c explain self-documenting code").unwrap();
-        if let GatewayCommand::Claude { prompt } = cmd {
-            assert_eq!(prompt, vec!["explain self-documenting code"]);
-        } else {
-            panic!("Expected Claude command");
-        }
-
-        // Uppercase /C works too
-        let cmd = parse_gateway_command("/C hello").unwrap();
-        if let GatewayCommand::Claude { prompt } = cmd {
-            assert_eq!(prompt, vec!["hello"]);
-        } else {
-            panic!("Expected Claude command");
-        }
-
-        // Empty prompt should fail
-        assert!(parse_gateway_command("/c ").is_err());
-        assert!(parse_gateway_command("/c").is_err()); // No space, falls through to conf parser
     }
 }

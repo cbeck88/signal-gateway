@@ -5,7 +5,7 @@
 use conf::{Conf, Subcommands};
 use hyper::service::service_fn;
 use hyper_util::{rt::TokioIo, server::conn::auto};
-use signal_gateway::{Gateway, GatewayConfig};
+use signal_gateway::{CommandRouter, Gateway, GatewayConfig, Handling};
 use std::{env, fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -110,10 +110,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let token = CancellationToken::new();
 
-    let message_handler = config.admin_handler.map(|cmd| match cmd {
-        AdminHandlerCommand::AdminHttp(config) => config.into_handler(),
-    });
-    let gateway = Gateway::new(config.gateway, token.clone(), message_handler).await;
+    // Build the command router
+    let mut router_builder = CommandRouter::builder()
+        .route("--help", Handling::Help)
+        .route("-h", Handling::Help);
+
+    // Add custom handler for "#" prefix if configured
+    if let Some(admin_handler) = config.admin_handler {
+        let handler = match admin_handler {
+            AdminHandlerCommand::AdminHttp(config) => config.into_handler(),
+        };
+        router_builder = router_builder.route("#", Handling::Custom(handler));
+    }
+
+    // Add gateway commands for "/" prefix
+    router_builder = router_builder.route("/", Handling::GatewayCommand);
+
+    // Add Claude as default handler if configured
+    if config.gateway.claude.is_some() {
+        router_builder = router_builder.route("", Handling::Claude);
+    }
+
+    let command_router = router_builder.build();
+    let gateway = Gateway::new(config.gateway, token.clone(), command_router).await;
 
     let listener = TcpListener::bind(config.http_listen_addr).await.unwrap();
     info!("Listening for http on {}", config.http_listen_addr);
