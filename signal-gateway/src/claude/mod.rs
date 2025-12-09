@@ -6,6 +6,7 @@ mod worker;
 pub use tools::{Tool, ToolExecutor};
 pub use worker::SentBy;
 
+use crate::message_handler::AdminMessageResponse;
 use chrono::{DateTime, Utc};
 use conf::Conf;
 use std::path::PathBuf;
@@ -119,11 +120,15 @@ impl ClaudeApi {
         })
     }
 
-    /// Send a prompt to the Claude API, execute tools etc., and return the response text.
+    /// Send a prompt to the Claude API, execute tools etc., and return the response.
     ///
     /// Returns a future that resolves when the request is complete.
     /// Returns `QueueFull` error if the request queue is full.
-    pub async fn request(&self, prompt: &str, ts_ms: u64) -> Result<String, ClaudeError> {
+    pub async fn request(
+        &self,
+        prompt: &str,
+        ts_ms: u64,
+    ) -> Result<AdminMessageResponse, ClaudeError> {
         let (result_tx, result_rx) = oneshot::channel();
 
         let timestamp = DateTime::from_timestamp_millis(ts_ms as i64).unwrap_or_else(Utc::now);

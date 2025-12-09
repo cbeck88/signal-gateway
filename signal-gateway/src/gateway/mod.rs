@@ -539,8 +539,8 @@ impl Gateway {
                 };
 
                 match claude.request(stripped_message, data.timestamp).await {
-                    Ok(response) => Some(Ok(SourcedAdminMessageResponse {
-                        resp: AdminMessageResponse::new(response),
+                    Ok(resp) => Some(Ok(SourcedAdminMessageResponse {
+                        resp,
                         source: SentBy::Claude,
                     })),
                     Err(err) => Some(Err((500, err.to_string().into()))),

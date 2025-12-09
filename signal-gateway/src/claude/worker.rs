@@ -1,6 +1,7 @@
 //! Background worker that processes Claude API requests serially.
 
 use super::{ANTHROPIC_API_VERSION, ClaudeConfig, ClaudeError, Tool, ToolExecutor};
+use crate::message_handler::AdminMessageResponse;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -10,7 +11,7 @@ use tracing::info;
 
 /// Sent with inputs to claude that claude is expected to respond to. The sender
 /// gives the worker a way to return the results to the caller asynchronously.
-pub type ResultSender = oneshot::Sender<Result<String, ClaudeError>>;
+pub type ResultSender = oneshot::Sender<Result<AdminMessageResponse, ClaudeError>>;
 
 /// Indicates the "role" i.e. the manner in which a particular message was sent
 pub enum SentBy {
@@ -184,7 +185,7 @@ impl ClaudeWorker {
     }
 
     /// Handle a single request to the Claude API.
-    async fn handle_request(&mut self) -> Result<String, ClaudeError> {
+    async fn handle_request(&mut self) -> Result<AdminMessageResponse, ClaudeError> {
         let max_iterations = self.config.claude_max_iterations;
 
         // Get tools from the executor if still alive
@@ -271,7 +272,7 @@ impl ClaudeWorker {
             }
 
             // No tool use, extract final text response
-            let text = response
+            let text: String = response
                 .content
                 .into_iter()
                 .filter_map(|block| {
@@ -285,7 +286,7 @@ impl ClaudeWorker {
                 .join("\n");
 
             info!("Claude final result: {}", text);
-            return Ok(text);
+            return Ok(AdminMessageResponse::new(text));
         }
 
         Err(ClaudeError::TooManyIterations(max_iterations))
