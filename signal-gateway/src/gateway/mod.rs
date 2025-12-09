@@ -156,10 +156,10 @@ enum GatewayCommand {
     #[conf(name = "alerts", alias = "ALERTS")]
     Alerts,
     /// Stop current Claude request
-    #[conf(name = "stop", alias = "STOP")]
+    #[conf(name = "claude-stop", alias = "CLAUDE-STOP")]
     ClaudeStop,
     /// Compact Claude's message history
-    #[conf(name = "compact", alias = "COMPACT")]
+    #[conf(name = "claude-compact", alias = "CLAUDE-COMPACT")]
     ClaudeCompact,
 }
 
