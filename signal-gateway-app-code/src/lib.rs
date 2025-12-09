@@ -1,0 +1,722 @@
+//! Application source code browsing via GitHub tarball downloads.
+//!
+//! This crate provides tools for browsing application source code by downloading
+//! tarballs from GitHub and caching them in memory.
+
+use async_trait::async_trait;
+use conf::Conf;
+use flate2::read::GzDecoder;
+use regex::Regex;
+use serde::Deserialize;
+use signal_gateway::claude::{Tool, ToolExecutor, ToolResult};
+use std::{
+    collections::HashMap, error::Error, fmt::Write, io::Read, path::PathBuf, str::FromStr,
+    sync::Arc,
+};
+use tar::Archive;
+use tokio::sync::{Mutex, MutexGuard};
+use tracing::info;
+
+/// A GitHub repository identifier (owner/repo).
+#[derive(Clone, Debug)]
+pub struct GitHubRepo {
+    /// The repository owner (user or organization).
+    pub owner: String,
+    /// The repository name.
+    pub repo: String,
+}
+
+impl FromStr for GitHubRepo {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.split('/').collect();
+        if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+            return Err(format!(
+                "invalid GitHub repo '{}': expected 'owner/repo' format",
+                s
+            ));
+        }
+        Ok(Self {
+            owner: parts[0].to_string(),
+            repo: parts[1].to_string(),
+        })
+    }
+}
+
+/// Configuration for an application's source code access.
+#[derive(Clone, Conf, Debug)]
+#[conf(serde)]
+pub struct AppCodeConfig {
+    /// Name of the application (used to identify it in tool calls).
+    #[conf(long, env)]
+    pub name: String,
+    /// GitHub repository in "owner/repo" format.
+    #[conf(long, env, serde(use_value_parser))]
+    pub github: GitHubRepo,
+    /// Path to file containing the GitHub personal access token.
+    #[conf(long, env)]
+    pub token_file: PathBuf,
+}
+
+/// A file stored in memory from the tarball.
+#[derive(Debug, Clone)]
+struct CachedFile {
+    /// The file contents as a string (lossy UTF-8 conversion).
+    content: String,
+}
+
+/// Cached tarball contents.
+struct CachedTarball {
+    /// The git SHA this tarball corresponds to.
+    sha: String,
+    /// Map from file path to file contents.
+    files: HashMap<String, CachedFile>,
+}
+
+/// Callback type for getting the current deployed git SHA.
+pub type ShaCallback = Arc<dyn Fn() -> Result<String, Box<dyn Error + Send + Sync>> + Send + Sync>;
+
+/// Application source code browser.
+///
+/// Downloads and caches GitHub tarballs for browsing application source code.
+pub struct AppCode {
+    config: AppCodeConfig,
+    token: String,
+    get_sha: ShaCallback,
+    client: reqwest::Client,
+    cache: Mutex<Option<CachedTarball>>,
+}
+
+impl AppCode {
+    /// Create a new AppCode instance from configuration.
+    ///
+    /// The `get_sha` callback is called to determine which git SHA to download.
+    /// It should return `None` if the SHA is not yet known.
+    pub fn new(config: AppCodeConfig, get_sha: ShaCallback) -> Result<Self, std::io::Error> {
+        let token = std::fs::read_to_string(&config.token_file)?
+            .trim()
+            .to_string();
+
+        Ok(Self {
+            config,
+            token,
+            get_sha,
+            client: reqwest::Client::new(),
+            cache: Mutex::new(None),
+        })
+    }
+
+    /// Get the application name.
+    pub fn name(&self) -> &str {
+        &self.config.name
+    }
+
+    /// Get the current tarball, downloading if necessary.
+    ///
+    /// Returns a mutex guard containing the cached tarball. After this succeeds,
+    /// the Option is guaranteed to be Some.
+    async fn get_current_tarball(&self) -> Result<MutexGuard<'_, Option<CachedTarball>>, String> {
+        let current_sha = (self.get_sha)().map_err(|e| format!("SHA not available: {e}"))?;
+
+        let mut cache = self.cache.lock().await;
+
+        // Check if we already have this SHA cached
+        let needs_download = match &*cache {
+            Some(cached) => cached.sha != current_sha,
+            None => true,
+        };
+
+        if needs_download {
+            info!(
+                "Downloading tarball for {} at {}",
+                self.config.name, current_sha
+            );
+
+            let tarball = self.download_tarball(&current_sha).await?;
+            let files = self.extract_tarball(&tarball)?;
+
+            *cache = Some(CachedTarball {
+                sha: current_sha,
+                files,
+            });
+        }
+
+        Ok(cache)
+    }
+
+    /// Download a tarball from GitHub for the given SHA.
+    async fn download_tarball(&self, sha: &str) -> Result<Vec<u8>, String> {
+        let url = format!(
+            "https://api.github.com/repos/{}/{}/tarball/{}",
+            self.config.github.owner, self.config.github.repo, sha
+        );
+
+        let response = self
+            .client
+            .get(&url)
+            .header("Authorization", format!("Bearer {}", self.token))
+            .header("Accept", "application/vnd.github+json")
+            .header("User-Agent", "signal-gateway")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .send()
+            .await
+            .map_err(|e| format!("HTTP request failed: {e}"))?;
+
+        if !response.status().is_success() {
+            return Err(format!(
+                "GitHub API error: {} {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
+            ));
+        }
+
+        response
+            .bytes()
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| format!("Failed to read response body: {e}"))
+    }
+
+    /// Extract a tarball into a map of file paths to contents.
+    fn extract_tarball(&self, tarball: &[u8]) -> Result<HashMap<String, CachedFile>, String> {
+        let decoder = GzDecoder::new(tarball);
+        let mut archive = Archive::new(decoder);
+
+        let mut files = HashMap::new();
+
+        for entry in archive
+            .entries()
+            .map_err(|e| format!("Failed to read tarball: {e}"))?
+        {
+            let mut entry = entry.map_err(|e| format!("Failed to read entry: {e}"))?;
+
+            // Skip directories
+            if entry.header().entry_type().is_dir() {
+                continue;
+            }
+
+            let path = entry
+                .path()
+                .map_err(|e| format!("Failed to get path: {e}"))?
+                .to_string_lossy()
+                .to_string();
+
+            // GitHub tarballs have a prefix like "owner-repo-sha/"
+            // Strip the first component
+            let path = path.split('/').skip(1).collect::<Vec<_>>().join("/");
+
+            if path.is_empty() {
+                continue;
+            }
+
+            // Read file contents
+            let mut contents = Vec::new();
+            if entry.read_to_end(&mut contents).is_err() {
+                continue; // Skip files we can't read
+            }
+
+            // Convert to string (lossy)
+            let content = String::from_utf8_lossy(&contents).to_string();
+
+            files.insert(path, CachedFile { content });
+        }
+
+        info!("Extracted {} files from tarball", files.len());
+        Ok(files)
+    }
+
+    /// List files in a directory (like `ls`).
+    ///
+    /// If `path` is None or empty, lists the root directory.
+    pub async fn ls(&self, path: Option<&str>) -> Result<String, String> {
+        let cache = self.get_current_tarball().await?;
+        let cached = cache
+            .as_ref()
+            .expect("cache guaranteed after get_current_tarball");
+
+        let prefix = path.unwrap_or("").trim_start_matches('/');
+        let prefix = if prefix.is_empty() {
+            String::new()
+        } else if prefix.ends_with('/') {
+            prefix.to_string()
+        } else {
+            format!("{}/", prefix)
+        };
+
+        let mut entries = std::collections::BTreeSet::new();
+
+        for file_path in cached.files.keys() {
+            if prefix.is_empty() || file_path.starts_with(&prefix) {
+                // Get the part after the prefix
+                let remainder = if prefix.is_empty() {
+                    file_path.as_str()
+                } else {
+                    &file_path[prefix.len()..]
+                };
+
+                // Get just the first component (file or directory name)
+                if let Some(first) = remainder.split('/').next()
+                    && !first.is_empty() {
+                        // Check if it's a directory (has more components)
+                        let is_dir = remainder.contains('/');
+                        let entry = if is_dir {
+                            format!("{}/", first)
+                        } else {
+                            first.to_string()
+                        };
+                        entries.insert(entry);
+                    }
+            }
+        }
+
+        if entries.is_empty() {
+            Ok(format!(
+                "No files found in '{}'",
+                prefix.trim_end_matches('/')
+            ))
+        } else {
+            Ok(entries.into_iter().collect::<Vec<_>>().join("\n"))
+        }
+    }
+
+    /// Find files matching a glob pattern (like `find`).
+    ///
+    /// Supports simple glob patterns with `*` wildcards.
+    pub async fn find(&self, pattern: Option<&str>) -> Result<String, String> {
+        let cache = self.get_current_tarball().await?;
+        let cached = cache
+            .as_ref()
+            .expect("cache guaranteed after get_current_tarball");
+
+        let pattern = pattern.unwrap_or("*");
+
+        // Convert glob pattern to regex
+        let regex_pattern = glob_to_regex(pattern);
+        let regex = Regex::new(&regex_pattern).map_err(|e| format!("Invalid pattern: {e}"))?;
+
+        let mut matches: Vec<&str> = cached
+            .files
+            .keys()
+            .filter(|path| regex.is_match(path))
+            .map(|s| s.as_str())
+            .collect();
+
+        matches.sort();
+
+        if matches.is_empty() {
+            Ok(format!("No files matching '{}'", pattern))
+        } else {
+            Ok(matches.join("\n"))
+        }
+    }
+
+    /// Read a file's contents.
+    ///
+    /// If `line_range` is provided, only returns those lines (1-indexed, inclusive).
+    pub async fn read(
+        &self,
+        path: &str,
+        line_start: Option<usize>,
+        line_end: Option<usize>,
+    ) -> Result<String, String> {
+        let cache = self.get_current_tarball().await?;
+        let cached = cache
+            .as_ref()
+            .expect("cache guaranteed after get_current_tarball");
+
+        let path = path.trim_start_matches('/');
+        let file = cached
+            .files
+            .get(path)
+            .ok_or_else(|| format!("File not found: {}", path))?;
+
+        let lines: Vec<&str> = file.content.lines().collect();
+
+        // Handle line range (1-indexed)
+        let start = line_start.unwrap_or(1).saturating_sub(1);
+        let end = line_end.unwrap_or(lines.len()).min(lines.len());
+
+        if start >= lines.len() {
+            return Ok(format!(
+                "Line {} is past end of file ({} lines)",
+                start + 1,
+                lines.len()
+            ));
+        }
+
+        let mut output = String::new();
+        for (i, line) in lines[start..end].iter().enumerate() {
+            writeln!(&mut output, "{:>6}\t{}", start + i + 1, line)
+                .map_err(|e| format!("Format error: {e}"))?;
+        }
+
+        Ok(output)
+    }
+
+    /// Search for a regex pattern in all files.
+    ///
+    /// - `pattern`: The regex pattern to search for.
+    /// - `context`: Number of context lines to show (like `grep -C`).
+    /// - `path_prefix`: Optional path prefix to limit search scope.
+    pub async fn search(
+        &self,
+        pattern: &str,
+        context: u32,
+        path_prefix: Option<&str>,
+    ) -> Result<String, String> {
+        let regex = Regex::new(pattern).map_err(|e| format!("Invalid regex: {e}"))?;
+
+        let cache = self.get_current_tarball().await?;
+        let cached = cache
+            .as_ref()
+            .expect("cache guaranteed after get_current_tarball");
+
+        let prefix = path_prefix.map(|p| p.trim_start_matches('/'));
+
+        let mut output = String::new();
+        let mut match_count = 0;
+        let mut file_count = 0;
+        const MAX_MATCHES: usize = 100;
+
+        let mut sorted_files: Vec<_> = cached.files.iter().collect();
+        sorted_files.sort_by_key(|(path, _)| *path);
+
+        'outer: for (path, file) in sorted_files {
+            // Skip if path doesn't match prefix
+            if let Some(prefix) = prefix
+                && !path.starts_with(prefix) {
+                    continue;
+                }
+
+            // Skip binary-looking files
+            if looks_binary(&file.content) {
+                continue;
+            }
+
+            let lines: Vec<&str> = file.content.lines().collect();
+            let mut file_matches = Vec::new();
+
+            for (line_num, line) in lines.iter().enumerate() {
+                if regex.is_match(line) {
+                    file_matches.push(line_num);
+                    match_count += 1;
+                    if match_count >= MAX_MATCHES {
+                        break 'outer;
+                    }
+                }
+            }
+
+            if !file_matches.is_empty() {
+                file_count += 1;
+
+                if context == 0 {
+                    // No context, just print matches
+                    for &line_num in &file_matches {
+                        writeln!(
+                            &mut output,
+                            "{}:{}: {}",
+                            path,
+                            line_num + 1,
+                            lines[line_num]
+                        )
+                        .map_err(|e| format!("Format error: {e}"))?;
+                    }
+                } else {
+                    // Print with context
+                    writeln!(&mut output, "=== {} ===", path)
+                        .map_err(|e| format!("Format error: {e}"))?;
+
+                    let context = context as usize;
+                    let mut printed = std::collections::BTreeSet::new();
+
+                    for &match_line in &file_matches {
+                        let start = match_line.saturating_sub(context);
+                        let end = (match_line + context + 1).min(lines.len());
+
+                        // Add separator if there's a gap
+                        if let Some(&last) = printed.iter().next_back()
+                            && start > last + 1 {
+                                writeln!(&mut output, "---")
+                                    .map_err(|e| format!("Format error: {e}"))?;
+                            }
+
+                        for (i, line) in lines[start..end].iter().enumerate() {
+                            let line_idx = start + i;
+                            if printed.insert(line_idx) {
+                                let marker = if line_idx == match_line { ">" } else { " " };
+                                writeln!(&mut output, "{}{:>5}\t{}", marker, line_idx + 1, line)
+                                    .map_err(|e| format!("Format error: {e}"))?;
+                            }
+                        }
+                    }
+                    writeln!(&mut output).map_err(|e| format!("Format error: {e}"))?;
+                }
+            }
+        }
+
+        if match_count == 0 {
+            Ok(format!("No matches for '{}'", pattern))
+        } else {
+            let truncated = if match_count >= MAX_MATCHES {
+                format!(" (truncated at {} matches)", MAX_MATCHES)
+            } else {
+                String::new()
+            };
+            Ok(format!(
+                "{}\n[{} matches in {} files{}]",
+                output.trim_end(),
+                match_count,
+                file_count,
+                truncated
+            ))
+        }
+    }
+}
+
+/// Convert a simple glob pattern to a regex.
+fn glob_to_regex(pattern: &str) -> String {
+    let mut regex = String::from("^");
+    for c in pattern.chars() {
+        match c {
+            '*' => regex.push_str(".*"),
+            '?' => regex.push('.'),
+            '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
+                regex.push('\\');
+                regex.push(c);
+            }
+            _ => regex.push(c),
+        }
+    }
+    regex.push('$');
+    regex
+}
+
+/// Check if content looks like binary data.
+fn looks_binary(content: &str) -> bool {
+    // Check first 1000 chars for null bytes or high ratio of non-printable chars
+    let sample: String = content.chars().take(1000).collect();
+    let non_printable = sample
+        .chars()
+        .filter(|c| !c.is_ascii_graphic() && !c.is_ascii_whitespace())
+        .count();
+    non_printable > sample.len() / 10
+}
+
+/// Tool executor for multiple application source code browsers.
+pub struct AppCodeTools {
+    apps: Vec<AppCode>,
+}
+
+impl AppCodeTools {
+    /// Create a new AppCodeTools instance.
+    pub fn new(apps: Vec<AppCode>) -> Self {
+        Self { apps }
+    }
+
+    /// Find an app by name.
+    fn find_app(&self, name: &str) -> Option<&AppCode> {
+        self.apps.iter().find(|app| app.name() == name)
+    }
+
+    /// Get list of app names for error messages.
+    fn app_names(&self) -> String {
+        self.apps
+            .iter()
+            .map(|a| a.name())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+#[derive(Deserialize)]
+struct LsInput {
+    app: String,
+    path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FindInput {
+    app: String,
+    pattern: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ReadInput {
+    app: String,
+    path: String,
+    line_start: Option<usize>,
+    line_end: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct SearchInput {
+    app: String,
+    pattern: String,
+    #[serde(default)]
+    context: u32,
+    path_prefix: Option<String>,
+}
+
+#[async_trait]
+impl ToolExecutor for AppCodeTools {
+    fn tools(&self) -> Vec<Tool> {
+        vec![
+            Tool {
+                name: "code_ls",
+                description: "List files in a directory of an application's source code.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "app": {
+                            "type": "string",
+                            "description": "Name of the application"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Directory path to list (optional, defaults to root)"
+                        }
+                    },
+                    "required": ["app"]
+                }),
+            },
+            Tool {
+                name: "code_find",
+                description: "Find files matching a glob pattern in an application's source code.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "app": {
+                            "type": "string",
+                            "description": "Name of the application"
+                        },
+                        "pattern": {
+                            "type": "string",
+                            "description": "Glob pattern to match (e.g., '*.rs', 'src/*.py')"
+                        }
+                    },
+                    "required": ["app"]
+                }),
+            },
+            Tool {
+                name: "code_read",
+                description: "Read a file from an application's source code.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "app": {
+                            "type": "string",
+                            "description": "Name of the application"
+                        },
+                        "path": {
+                            "type": "string",
+                            "description": "Path to the file to read"
+                        },
+                        "line_start": {
+                            "type": "integer",
+                            "description": "Starting line number (1-indexed, optional)"
+                        },
+                        "line_end": {
+                            "type": "integer",
+                            "description": "Ending line number (inclusive, optional)"
+                        }
+                    },
+                    "required": ["app", "path"]
+                }),
+            },
+            Tool {
+                name: "code_search",
+                description:
+                    "Search for a regex pattern in an application's source code (like grep).",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "app": {
+                            "type": "string",
+                            "description": "Name of the application"
+                        },
+                        "pattern": {
+                            "type": "string",
+                            "description": "Regex pattern to search for"
+                        },
+                        "context": {
+                            "type": "integer",
+                            "description": "Number of context lines to show (like grep -C, default 0)"
+                        },
+                        "path_prefix": {
+                            "type": "string",
+                            "description": "Optional path prefix to limit search scope"
+                        }
+                    },
+                    "required": ["app", "pattern"]
+                }),
+            },
+        ]
+    }
+
+    fn has_tool(&self, name: &str) -> bool {
+        matches!(name, "code_ls" | "code_find" | "code_read" | "code_search")
+    }
+
+    async fn execute(&self, name: &str, input: &serde_json::Value) -> Result<ToolResult, String> {
+        match name {
+            "code_ls" => {
+                let input: LsInput = serde_json::from_value(input.clone())
+                    .map_err(|e| format!("Invalid input: {e}"))?;
+                let app = self.find_app(&input.app).ok_or_else(|| {
+                    format!(
+                        "Unknown app '{}'. Available: {}",
+                        input.app,
+                        self.app_names()
+                    )
+                })?;
+                let result = app.ls(input.path.as_deref()).await?;
+                Ok(ToolResult::new(result))
+            }
+            "code_find" => {
+                let input: FindInput = serde_json::from_value(input.clone())
+                    .map_err(|e| format!("Invalid input: {e}"))?;
+                let app = self.find_app(&input.app).ok_or_else(|| {
+                    format!(
+                        "Unknown app '{}'. Available: {}",
+                        input.app,
+                        self.app_names()
+                    )
+                })?;
+                let result = app.find(input.pattern.as_deref()).await?;
+                Ok(ToolResult::new(result))
+            }
+            "code_read" => {
+                let input: ReadInput = serde_json::from_value(input.clone())
+                    .map_err(|e| format!("Invalid input: {e}"))?;
+                let app = self.find_app(&input.app).ok_or_else(|| {
+                    format!(
+                        "Unknown app '{}'. Available: {}",
+                        input.app,
+                        self.app_names()
+                    )
+                })?;
+                let result = app
+                    .read(&input.path, input.line_start, input.line_end)
+                    .await?;
+                Ok(ToolResult::new(result))
+            }
+            "code_search" => {
+                let input: SearchInput = serde_json::from_value(input.clone())
+                    .map_err(|e| format!("Invalid input: {e}"))?;
+                let app = self.find_app(&input.app).ok_or_else(|| {
+                    format!(
+                        "Unknown app '{}'. Available: {}",
+                        input.app,
+                        self.app_names()
+                    )
+                })?;
+                let result = app
+                    .search(&input.pattern, input.context, input.path_prefix.as_deref())
+                    .await?;
+                Ok(ToolResult::new(result))
+            }
+            _ => Err(format!("Unknown tool: {name}")),
+        }
+    }
+}
