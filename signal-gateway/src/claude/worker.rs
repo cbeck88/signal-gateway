@@ -325,6 +325,11 @@ impl ClaudeWorker {
 
     /// Log the message buffer for debugging.
     fn handle_debug(&self) {
+        if self.summary.is_empty() {
+            info!("Claude summary: (empty)");
+        } else {
+            info!("Claude summary:\n{}", self.summary);
+        }
         info!("Claude message buffer:\n{:#?}", self.messages);
     }
 
