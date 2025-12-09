@@ -253,9 +253,11 @@ impl ClaudeWorker {
         if !self.summary.is_empty() {
             system.push(SystemContent::text(&self.summary));
         }
-        // Mark the last one as cached
-        if let Some(last) = system.last_mut() {
-            *last = std::mem::take(last).cached();
+        // Mark the last one as cached if prompt caching is enabled
+        if self.config.prompt_caching
+            && let Some(last) = system.last_mut()
+        {
+            last.set_cached();
         }
 
         let request_body = MessagesRequest {
@@ -347,14 +349,16 @@ impl ClaudeWorker {
         let mut system: Vec<SystemContent> = self
             .system_prompts
             .iter()
-            .map(|text| SystemContent::text(text))
+            .map(SystemContent::text)
             .collect();
         if !self.summary.is_empty() {
             system.push(SystemContent::text(&self.summary));
         }
-        // Mark the last one as cached
-        if let Some(last) = system.last_mut() {
-            *last = std::mem::take(last).cached();
+        // Mark the last one as cached if prompt caching is enabled
+        if self.config.prompt_caching
+            && let Some(last) = system.last_mut()
+        {
+            last.set_cached();
         }
 
         for iteration in 0..max_iterations {
@@ -506,9 +510,8 @@ impl SystemContent {
         }
     }
 
-    fn cached(mut self) -> Self {
+    fn set_cached(&mut self) {
         self.cache_control = Some(CacheControl::ephemeral());
-        self
     }
 }
 
@@ -558,7 +561,9 @@ impl MessageContent {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 enum ContentBlock {
-    Text { text: Box<str> },
+    Text {
+        text: Box<str>,
+    },
     ToolUse {
         id: Box<str>,
         name: Box<str>,

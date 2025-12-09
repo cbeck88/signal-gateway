@@ -45,6 +45,9 @@ pub struct ClaudeConfig {
     /// Maximum tool use iterations before giving up.
     #[conf(long, env, default_value = "10")]
     pub claude_max_iterations: u32,
+    /// Enable prompt caching (adds cache_control to system prompts).
+    #[conf(long, env)]
+    pub prompt_caching: bool,
     /// Compaction configuration.
     #[conf(flatten, prefix)]
     pub compaction: CompactionConfig,
