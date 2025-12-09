@@ -56,16 +56,16 @@ pub struct ClaudeConfig {
 pub struct CompactionConfig {
     /// Path to file containing the compaction prompt.
     #[conf(long, env)]
-    pub compaction_prompt_file: PathBuf,
+    pub prompt_file: PathBuf,
     /// Model to use for compaction (typically a faster/cheaper model).
     #[conf(long, env, default_value = "claude-sonnet-4-5-20250929")]
-    pub compaction_model: String,
+    pub model: String,
     /// Maximum tokens for the compaction response.
     #[conf(long, env, default_value = "2048")]
-    pub compaction_max_tokens: u32,
+    pub max_tokens: u32,
     /// Trigger compaction when message buffer exceeds this many characters.
     #[conf(long, env, default_value = "50000")]
-    pub compaction_trigger_chars: u32,
+    pub trigger_chars: u32,
 }
 
 /// Error type for Claude API operations.

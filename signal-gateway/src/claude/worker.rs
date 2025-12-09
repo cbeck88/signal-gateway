@@ -121,7 +121,7 @@ impl ClaudeWorker {
             .collect::<Result<_, _>>()?;
 
         let compaction_prompt = {
-            let path = &config.compaction.compaction_prompt_file;
+            let path = &config.compaction.prompt_file;
             std::fs::read_to_string(path)
                 .map_err(|e| ClaudeError::SystemPromptRead(path.clone(), e))?
         };
@@ -156,7 +156,7 @@ impl ClaudeWorker {
 
                             // Check if we need to trigger compaction
                             let buffer_chars = self.message_buffer_chars();
-                            if buffer_chars > self.config.compaction.compaction_trigger_chars as usize {
+                            if buffer_chars > self.config.compaction.trigger_chars as usize {
                                 self.handle_compact().await;
                             }
 
@@ -259,8 +259,8 @@ impl ClaudeWorker {
         }
 
         let request_body = MessagesRequest {
-            model: &self.config.compaction.compaction_model,
-            max_tokens: self.config.compaction.compaction_max_tokens,
+            model: &self.config.compaction.model,
+            max_tokens: self.config.compaction.max_tokens,
             system: &system,
             messages: &self.messages,
             tools: Vec::new(),
