@@ -4,7 +4,7 @@
 use crate::signal_jsonrpc::connect_ipc;
 use crate::{
     alertmanager::AlertPost,
-    claude::{ClaudeApi, ClaudeConfig, SentBy, Tool, ToolExecutor},
+    claude::{ClaudeApi, ClaudeConfig, SentBy, Tool, ToolExecutor, ToolResult},
     log_message::{LogMessage, Origin},
     message_handler::{AdminMessage, AdminMessageResponse, Context, MessageHandlerResult},
     prometheus::{Prometheus, PrometheusConfig},
@@ -921,7 +921,7 @@ impl ToolExecutor for Gateway {
         tools
     }
 
-    async fn execute(&self, name: &str, input: &serde_json::Value) -> Result<String, String> {
+    async fn execute(&self, name: &str, input: &serde_json::Value) -> Result<ToolResult, String> {
         if self.log_handler.has_tool(name) {
             return self.log_handler.execute(name, input).await;
         }

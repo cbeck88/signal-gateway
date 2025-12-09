@@ -3,7 +3,7 @@
 mod tools;
 mod worker;
 
-pub use tools::{Tool, ToolExecutor};
+pub use tools::{Tool, ToolExecutor, ToolResult};
 pub use worker::SentBy;
 
 use crate::message_handler::AdminMessageResponse;

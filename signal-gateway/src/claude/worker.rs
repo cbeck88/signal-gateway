@@ -5,6 +5,7 @@ use crate::message_handler::AdminMessageResponse;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::PathBuf;
 use std::sync::Weak;
 use tokio::sync::{mpsc, oneshot};
 use tracing::info;
@@ -192,10 +193,14 @@ impl ClaudeWorker {
         let executor = self.tool_executor.upgrade();
         let tools = executor.as_ref().map(|te| te.tools()).unwrap_or_default();
 
+        // Collect attachments from tool results across all iterations
+        let mut attachments: Vec<PathBuf> = Vec::new();
+
         if let Some(last) = self.messages.last()
-            && let Some(ContentBlock::Text { text, .. }) = last.content.first() {
-                info!("Claude request: {}", text);
-            }
+            && let Some(ContentBlock::Text { text, .. }) = last.content.first()
+        {
+            info!("Claude request: {}", text);
+        }
 
         for iteration in 0..max_iterations {
             // Check for stop before making API call
@@ -248,10 +253,12 @@ impl ClaudeWorker {
                         self.check_stop()?;
 
                         info!("Claude tool use: {}({})", name, input);
-                        let (result, is_error) = match executor.execute(name, input).await {
-                            Ok(result) => {
-                                info!("Tool result: {}", result);
-                                (result, false)
+                        let (result_text, is_error) = match executor.execute(name, input).await {
+                            Ok(tool_result) => {
+                                info!("Tool result: {}", tool_result.text);
+                                // Collect any attachments from the tool result
+                                attachments.extend(tool_result.attachments);
+                                (tool_result.text, false)
                             }
                             Err(err) => {
                                 info!("Tool error: {}", err);
@@ -260,7 +267,7 @@ impl ClaudeWorker {
                         };
                         self.messages.push(MessageContent::tool_result(
                             id.to_string(),
-                            result,
+                            result_text,
                             is_error,
                         ));
                     }
@@ -286,7 +293,7 @@ impl ClaudeWorker {
                 .join("\n");
 
             info!("Claude final result: {}", text);
-            return Ok(AdminMessageResponse::new(text));
+            return Ok(AdminMessageResponse::new(text).with_attachments(attachments));
         }
 
         Err(ClaudeError::TooManyIterations(max_iterations))

@@ -1,4 +1,4 @@
-use crate::claude::{Tool, ToolExecutor};
+use crate::claude::{Tool, ToolExecutor, ToolResult};
 use async_trait::async_trait;
 use conf::Conf;
 use prometheus_http_client::{
@@ -299,13 +299,40 @@ fn alerts_tool() -> Tool {
     }
 }
 
+fn plot_tool() -> Tool {
+    Tool {
+        name: "prometheus_plot",
+        description: "Create a plot/graph of a Prometheus metric over time. Returns the plot as an image attachment.",
+        input_schema: serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "A PromQL query expression to plot (e.g., 'rate(http_requests_total[5m])')"
+                },
+                "range": {
+                    "type": "string",
+                    "description": "Time range to plot, as a duration string (e.g., '1h', '30m', '2d'). Defaults to '1h'."
+                }
+            },
+            "required": ["query"]
+        }),
+    }
+}
+
 #[async_trait]
 impl ToolExecutor for Prometheus {
     fn tools(&self) -> Vec<Tool> {
-        vec![query_tool(), series_tool(), labels_tool(), alerts_tool()]
+        vec![
+            query_tool(),
+            series_tool(),
+            labels_tool(),
+            alerts_tool(),
+            plot_tool(),
+        ]
     }
 
-    async fn execute(&self, name: &str, input: &serde_json::Value) -> Result<String, String> {
+    async fn execute(&self, name: &str, input: &serde_json::Value) -> Result<ToolResult, String> {
         match name {
             "prometheus_query" => {
                 let query = input
@@ -326,7 +353,7 @@ impl ToolExecutor for Prometheus {
                                 .unwrap_or_else(|| "-".to_owned());
                             writeln!(&mut result, "  {:?} = {}", sl, value_str).unwrap();
                         }
-                        Ok(result)
+                        Ok(result.into())
                     }
                     Err(err) => Err(format!("prometheus query failed: {err}")),
                 }
@@ -351,7 +378,7 @@ impl ToolExecutor for Prometheus {
                         if series.len() > 100 {
                             result.push_str(&format!("  ... and {} more\n", series.len() - 100));
                         }
-                        Ok(result)
+                        Ok(result.into())
                     }
                     Err(err) => Err(format!("prometheus series failed: {err}")),
                 }
@@ -373,7 +400,7 @@ impl ToolExecutor for Prometheus {
                         for label in &labels {
                             writeln!(&mut result, "  {}", label).unwrap();
                         }
-                        Ok(result)
+                        Ok(result.into())
                     }
                     Err(err) => Err(format!("prometheus labels failed: {err}")),
                 }
@@ -381,7 +408,7 @@ impl ToolExecutor for Prometheus {
             "prometheus_alerts" => match self.alerts().await {
                 Ok(alerts) => {
                     if alerts.is_empty() {
-                        return Ok("No active alerts".to_owned());
+                        return Ok("No active alerts".into());
                     }
                     let mut result = format!("Found {} alerts:\n", alerts.len());
                     for alert in &alerts {
@@ -392,10 +419,36 @@ impl ToolExecutor for Prometheus {
                         )
                         .unwrap();
                     }
-                    Ok(result)
+                    Ok(result.into())
                 }
                 Err(err) => Err(format!("prometheus alerts failed: {err}")),
             },
+            "prometheus_plot" => {
+                #[cfg(feature = "plot")]
+                {
+                    let query = input
+                        .get("query")
+                        .and_then(|v| v.as_str())
+                        .ok_or_else(|| "missing 'query' parameter".to_owned())?;
+
+                    // Parse range, default to 1h
+                    let range_str = input.get("range").and_then(|v| v.as_str()).unwrap_or("1h");
+                    let range = conf_extra::parse_duration(range_str)
+                        .map_err(|e| format!("invalid range '{}': {}", range_str, e))?;
+
+                    match self.create_oneoff_plot(query.to_owned(), range).await {
+                        Ok(path) => Ok(ToolResult::with_attachment(
+                            format!("Plot created: {}", path.display()),
+                            path,
+                        )),
+                        Err(err) => Err(format!("prometheus plot failed: {err}")),
+                    }
+                }
+                #[cfg(not(feature = "plot"))]
+                {
+                    Err("prometheus_plot requires the 'plot' feature to be enabled".to_owned())
+                }
+            }
             _ => Err(format!("unknown tool: {name}")),
         }
     }

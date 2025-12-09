@@ -24,7 +24,6 @@ pub struct CommandRouter {
     routes: Vec<(String, Handling)>,
 }
 
-
 impl CommandRouter {
     /// Create a builder for constructing a CommandRouter.
     pub fn builder() -> CommandRouterBuilder {

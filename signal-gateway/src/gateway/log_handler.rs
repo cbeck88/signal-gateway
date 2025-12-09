@@ -4,7 +4,7 @@ use super::{
     route::{Destination, Limit, Route},
 };
 use crate::{
-    claude::{Tool, ToolExecutor},
+    claude::{Tool, ToolExecutor, ToolResult},
     concurrent_map::LazyMap,
     log_format::LogFormatConfig,
     log_message::{LogFilter, LogMessage, Origin},
@@ -308,11 +308,11 @@ impl ToolExecutor for LogHandler {
         vec![logs_tool()]
     }
 
-    async fn execute(&self, name: &str, input: &serde_json::Value) -> Result<String, String> {
+    async fn execute(&self, name: &str, input: &serde_json::Value) -> Result<ToolResult, String> {
         match name {
             "logs" => {
                 let filter = input.get("filter").and_then(|v| v.as_str());
-                Ok(self.format_logs(filter).await)
+                Ok(self.format_logs(filter).await.into())
             }
             _ => Err(format!("unknown tool: {name}")),
         }
