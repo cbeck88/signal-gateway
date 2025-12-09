@@ -10,12 +10,12 @@ use regex::Regex;
 use serde::Deserialize;
 use signal_gateway::claude::{Tool, ToolExecutor, ToolResult};
 use std::{
-    collections::HashMap, error::Error, fmt::Write, io::Read, path::PathBuf, str::FromStr,
-    sync::Arc,
+    collections::HashMap, error::Error, fmt::Write, future::Future, io::Read, path::PathBuf,
+    pin::Pin, str::FromStr, sync::Arc,
 };
 use tar::Archive;
 use tokio::sync::{Mutex, MutexGuard};
-use tracing::info;
+use tracing::{error, info, warn};
 
 /// A GitHub repository identifier (owner/repo).
 #[derive(Clone, Debug)]
@@ -75,7 +75,13 @@ struct CachedTarball {
 }
 
 /// Callback type for getting the current deployed git SHA.
-pub type ShaCallback = Arc<dyn Fn() -> Result<String, Box<dyn Error + Send + Sync>> + Send + Sync>;
+///
+/// This is an async callback that returns a future resolving to the SHA.
+pub type ShaCallback = Arc<
+    dyn Fn() -> Pin<Box<dyn Future<Output = Result<String, Box<dyn Error + Send + Sync>>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// Application source code browser.
 ///
@@ -114,10 +120,23 @@ impl AppCode {
 
     /// Get the current tarball, downloading if necessary.
     ///
-    /// Returns a mutex guard containing the cached tarball. After this succeeds,
-    /// the Option is guaranteed to be Some.
-    async fn get_current_tarball(&self) -> Result<MutexGuard<'_, Option<CachedTarball>>, String> {
-        let current_sha = (self.get_sha)().map_err(|e| format!("SHA not available: {e}"))?;
+    /// Returns a mutex guard containing the cached tarball. This method never fails;
+    /// instead it logs warnings and returns whatever is currently cached:
+    ///
+    /// - If the SHA callback fails, returns the existing cache (possibly stale or None)
+    /// - If the tarball download fails, returns the existing cache
+    /// - If tarball extraction fails, returns the existing cache
+    ///
+    /// This design assumes that stale code is better than no code, since most of the
+    /// codebase is likely unchanged between versions.
+    async fn get_current_tarball(&self) -> MutexGuard<'_, Option<CachedTarball>> {
+        let current_sha = match (self.get_sha)().await {
+            Ok(sha) => sha,
+            Err(e) => {
+                warn!("Failed to get current SHA for {}: {e}", self.config.name);
+                return self.cache.lock().await;
+            }
+        };
 
         let mut cache = self.cache.lock().await;
 
@@ -133,8 +152,21 @@ impl AppCode {
                 self.config.name, current_sha
             );
 
-            let tarball = self.download_tarball(&current_sha).await?;
-            let files = self.extract_tarball(&tarball)?;
+            let tarball = match self.download_tarball(&current_sha).await {
+                Ok(t) => t,
+                Err(e) => {
+                    error!("Failed to download tarball for {}: {e}", self.config.name);
+                    return cache;
+                }
+            };
+
+            let files = match self.extract_tarball(&tarball) {
+                Ok(f) => f,
+                Err(e) => {
+                    error!("Failed to extract tarball for {}: {e}", self.config.name);
+                    return cache;
+                }
+            };
 
             *cache = Some(CachedTarball {
                 sha: current_sha,
@@ -142,7 +174,7 @@ impl AppCode {
             });
         }
 
-        Ok(cache)
+        cache
     }
 
     /// Download a tarball from GitHub for the given SHA.
@@ -230,10 +262,10 @@ impl AppCode {
     ///
     /// If `path` is None or empty, lists the root directory.
     pub async fn ls(&self, path: Option<&str>) -> Result<String, String> {
-        let cache = self.get_current_tarball().await?;
+        let cache = self.get_current_tarball().await;
         let cached = cache
             .as_ref()
-            .expect("cache guaranteed after get_current_tarball");
+            .ok_or("source code not available")?;
 
         let prefix = path.unwrap_or("").trim_start_matches('/');
         let prefix = if prefix.is_empty() {
@@ -284,10 +316,10 @@ impl AppCode {
     ///
     /// Supports simple glob patterns with `*` wildcards.
     pub async fn find(&self, pattern: Option<&str>) -> Result<String, String> {
-        let cache = self.get_current_tarball().await?;
+        let cache = self.get_current_tarball().await;
         let cached = cache
             .as_ref()
-            .expect("cache guaranteed after get_current_tarball");
+            .ok_or("source code not available")?;
 
         let pattern = pattern.unwrap_or("*");
 
@@ -320,10 +352,10 @@ impl AppCode {
         line_start: Option<usize>,
         line_end: Option<usize>,
     ) -> Result<String, String> {
-        let cache = self.get_current_tarball().await?;
+        let cache = self.get_current_tarball().await;
         let cached = cache
             .as_ref()
-            .expect("cache guaranteed after get_current_tarball");
+            .ok_or("source code not available")?;
 
         let path = path.trim_start_matches('/');
         let file = cached
@@ -367,10 +399,10 @@ impl AppCode {
     ) -> Result<String, String> {
         let regex = Regex::new(pattern).map_err(|e| format!("Invalid regex: {e}"))?;
 
-        let cache = self.get_current_tarball().await?;
+        let cache = self.get_current_tarball().await;
         let cached = cache
             .as_ref()
-            .expect("cache guaranteed after get_current_tarball");
+            .ok_or("source code not available")?;
 
         let prefix = path_prefix.map(|p| p.trim_start_matches('/'));
 
