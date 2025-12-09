@@ -49,6 +49,22 @@ pub use route::{Destination, Limit, Route, evaluate_limiter_sequence};
 
 pub use crate::rate_limiter::{Limiter, RateThreshold};
 
+use std::error::Error;
+
+/// An admin message response with its source attribution.
+///
+/// This wraps an [`AdminMessageResponse`] with information about who generated
+/// the response (e.g., System, Claude, etc.) for proper message history tracking.
+pub struct SourcedAdminMessageResponse {
+    /// The response content.
+    pub resp: AdminMessageResponse,
+    /// Who generated this response.
+    pub source: SentBy,
+}
+
+/// Result type for sourced admin message responses.
+type SourcedMessageResult = Result<SourcedAdminMessageResponse, (u16, Box<dyn Error + Send + Sync>)>;
+
 /// Configuration for the gateway.
 #[derive(Conf, Debug)]
 #[conf(serde)]
@@ -426,27 +442,30 @@ impl Gateway {
                                 continue;
                             }
 
-                            let (resp, _) = join!(
+                            let (result, _) = join!(
                                 self.handle_signal_admin_message(&msg.envelope),
-                                msg.envelope.send_read_receipt(signal_cli, &self.config.signal_account).map(|result| {
-                                    if let Err(err) = result {
+                                msg.envelope.send_read_receipt(signal_cli, &self.config.signal_account).map(|r| {
+                                    if let Err(err) = r {
                                         warn!("Couldn't send read receipt: {err}");
                                     }
                                 })
                             );
 
                             // If no route matched, don't send a response
-                            let Some(resp) = resp else {
+                            let Some(result) = result else {
                                 continue;
                             };
 
-                            let resp = resp.unwrap_or_else(|(code, msg)| {
+                            let sourced = result.unwrap_or_else(|(code, msg)| {
                                 let text = format!("{code}: {msg}");
                                 error!("Message handler error: {text}");
-                                AdminMessageResponse::new(text)
+                                SourcedAdminMessageResponse {
+                                    resp: AdminMessageResponse::new(text),
+                                    source: SentBy::System,
+                                }
                             });
 
-                            let attachments = resp.attachments.iter().map(|p| p.to_str().expect("attachments must have utf8 paths").to_owned()).collect();
+                            let attachments = sourced.resp.attachments.iter().map(|p| p.to_str().expect("attachments must have utf8 paths").to_owned()).collect();
 
                             // Reply to group if message came from a group, otherwise reply to sender
                             let target = if let Some(group_id) = from_group {
@@ -458,13 +477,12 @@ impl Gateway {
                             SignalMessage {
                                 sender: self.config.signal_account.clone(),
                                 target,
-                                message: resp.text.clone(),
+                                message: sourced.resp.text.clone(),
                                 attachments,
                             }.send(signal_cli).await?;
 
                             if let Some(claude) = self.claude.get() {
-                                let sent_by = if resp.is_claude { SentBy::Claude } else { SentBy::System };
-                                claude.record_message(sent_by, &resp.text, Utc::now().timestamp_millis() as u64);
+                                claude.record_message(sourced.source, &sourced.resp.text, Utc::now().timestamp_millis() as u64);
                             }
                         }
                     }
@@ -476,7 +494,7 @@ impl Gateway {
     // Returns None if no route matched (don't send a response)
     // Returns Some(Err) in case of a handler error
     // Returns Some(Ok) when success or error text is generated
-    async fn handle_signal_admin_message(&self, msg: &Envelope) -> Option<MessageHandlerResult> {
+    async fn handle_signal_admin_message(&self, msg: &Envelope) -> Option<SourcedMessageResult> {
         let data = msg.data_message.as_ref().unwrap();
 
         let (stripped_message, handling) = self.command_router.route(&data.message)?;
@@ -487,7 +505,10 @@ impl Gateway {
                 if let Some(claude) = self.claude.get() {
                     claude.record_message(SentBy::UserToSystem, &data.message, data.timestamp);
                 }
-                Some(Ok(AdminMessageResponse::new(self.command_router.help())))
+                Some(Ok(SourcedAdminMessageResponse {
+                    resp: AdminMessageResponse::new(self.command_router.help()),
+                    source: SentBy::System,
+                }))
             }
             Handling::GatewayCommand => {
                 // Parse the command using conf (stripped message has "/" prefix removed)
@@ -505,7 +526,10 @@ impl Gateway {
                     Ok(resp) => resp,
                     Err(err) => return Some(Err(err)),
                 };
-                Some(Ok(resp))
+                Some(Ok(SourcedAdminMessageResponse {
+                    resp,
+                    source: SentBy::System,
+                }))
             }
             Handling::Claude => {
                 // Send directly to Claude (use stripped message)
@@ -514,7 +538,10 @@ impl Gateway {
                 };
 
                 match claude.request(stripped_message, data.timestamp).await {
-                    Ok(response) => Some(Ok(AdminMessageResponse::new(response).from_claude())),
+                    Ok(response) => Some(Ok(SourcedAdminMessageResponse {
+                        resp: AdminMessageResponse::new(response),
+                        source: SentBy::Claude,
+                    })),
                     Err(err) => Some(Err((500, err.to_string().into()))),
                 }
             }
@@ -531,7 +558,16 @@ impl Gateway {
                     sender_uuid: msg.source_uuid.clone(),
                     group_id: data.group_info.as_ref().map(|g| g.group_id.clone()),
                 };
-                Some(handler.handle_verified_signal_message(admin_msg, &GatewayContext).await)
+                match handler
+                    .handle_verified_signal_message(admin_msg, &GatewayContext)
+                    .await
+                {
+                    Ok(resp) => Some(Ok(SourcedAdminMessageResponse {
+                        resp,
+                        source: SentBy::System,
+                    })),
+                    Err(err) => Some(Err(err)),
+                }
             }
         }
     }
