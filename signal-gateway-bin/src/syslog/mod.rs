@@ -25,7 +25,7 @@ pub struct SyslogConfig {
     /// Structured data ID for tracing metadata (module, file, line) in syslog messages.
     #[conf(long, env, default_value = "tracing-meta@64700")]
     pub sd_id: String,
-    /// If true, use CR as the message delimiter for non-transparent framing instead of LF.
+    /// If true, use CR (\r) as the message delimiter for non-transparent framing instead of LF (\n).
     /// See RFC 6587 (Syslog over TCP) section 3.4.2.
     /// Default delimiters: NUL or LF. With this flag: NUL or CR.
     #[conf(long, env)]
