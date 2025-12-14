@@ -1,6 +1,9 @@
 //! Claude API implementation of the Assistant trait.
 
+mod message_buffer;
+
 use conf::Conf;
+use message_buffer::MessageBuffer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use signal_gateway_assistant::{Assistant, AssistantResponse, ChatMessage, Tool, ToolExecutor};
@@ -96,7 +99,7 @@ pub struct ClaudeAssistant {
     compaction_prompt: String,
     /// Summary of previous conversation history, wrapped in XML tags.
     summary: String,
-    messages: Vec<MessageContent>,
+    messages: MessageBuffer,
     tool_executor: Weak<dyn ToolExecutor>,
     /// Timestamp of the last automatic compaction (not user-requested).
     last_auto_compaction: Option<std::time::Instant>,
@@ -135,32 +138,15 @@ impl ClaudeAssistant {
             system_prompts,
             compaction_prompt,
             summary: String::new(),
-            messages: Vec::new(),
+            messages: MessageBuffer::new(),
             tool_executor,
             last_auto_compaction: None,
         })
     }
 
-    /// Calculate total characters in the message buffer.
-    fn message_buffer_chars(&self) -> usize {
-        self.messages
-            .iter()
-            .map(|m| {
-                m.content
-                    .iter()
-                    .map(|block| match block {
-                        ContentBlock::Text { text } => text.len(),
-                        ContentBlock::ToolUse { input, .. } => estimate_json_size(input),
-                        ContentBlock::ToolResult { content, .. } => content.len(),
-                    })
-                    .sum::<usize>()
-            })
-            .sum()
-    }
-
     /// Check if automatic compaction should be triggered and handle it.
     async fn maybe_compact(&mut self) {
-        let buffer_chars = self.message_buffer_chars();
+        let buffer_chars = self.messages.total_chars();
         if buffer_chars <= self.config.compaction.trigger_chars as usize {
             return;
         }
@@ -184,31 +170,19 @@ impl ClaudeAssistant {
     /// Drop oldest messages until buffer is under the trigger threshold.
     fn drop_oldest_messages(&mut self) {
         let target = self.config.compaction.trigger_chars as usize;
-        let before_chars = self.message_buffer_chars();
+        let before_chars = self.messages.total_chars();
 
         if before_chars <= target {
             return;
         }
 
-        let mut current_chars = before_chars;
         let mut dropped = 0;
-
-        while current_chars > target && !self.messages.is_empty() {
-            let msg_chars = self.messages[0]
-                .content
-                .iter()
-                .map(|block| match block {
-                    ContentBlock::Text { text } => text.len(),
-                    ContentBlock::ToolUse { input, .. } => estimate_json_size(input),
-                    ContentBlock::ToolResult { content, .. } => content.len(),
-                })
-                .sum::<usize>();
-            current_chars = current_chars.saturating_sub(msg_chars);
-            self.messages.remove(0);
+        while self.messages.total_chars() > target && !self.messages.is_empty() {
+            self.messages.pop_front();
             dropped += 1;
         }
 
-        let after_chars = self.message_buffer_chars();
+        let after_chars = self.messages.total_chars();
         warn!(
             "Compaction rate-limited: dropped {} oldest messages ({} -> {} chars)",
             dropped, before_chars, after_chars
@@ -228,7 +202,7 @@ impl ClaudeAssistant {
         }
 
         let num_messages = self.messages.len();
-        let buffer_chars = self.message_buffer_chars();
+        let buffer_chars = self.messages.total_chars();
         warn!(
             "Starting {} compaction: {} messages, {} chars",
             if is_automatic { "automatic" } else { "manual" },
@@ -251,11 +225,12 @@ impl ClaudeAssistant {
             last.set_cached();
         }
 
+        let messages = self.messages.make_contiguous();
         let request_body = MessagesRequest {
             model: &self.config.compaction.model,
             max_tokens: self.config.compaction.max_tokens,
             system: &system,
-            messages: &self.messages,
+            messages,
             tools: Vec::new(),
         };
 
@@ -363,11 +338,12 @@ impl ClaudeAssistant {
                 return Ok(None);
             }
 
+            let messages = self.messages.make_contiguous();
             let request_body = MessagesRequest {
                 model: &self.config.claude_model,
                 max_tokens: self.config.claude_max_tokens,
                 system: &system,
-                messages: &self.messages,
+                messages,
                 tools: tools.clone(),
             };
 
@@ -509,28 +485,6 @@ fn message_to_content(msg: ChatMessage) -> MessageContent {
         content: vec![ContentBlock::Text { text: text.into() }],
     }
 }
-
-/// Estimate the serialized size of a JSON Value without allocating.
-fn estimate_json_size(value: &Value) -> usize {
-    match value {
-        Value::Null => 4,
-        Value::Bool(true) => 4,
-        Value::Bool(false) => 5,
-        Value::Number(n) => n.to_string().len(),
-        Value::String(s) => s.len() + 2,
-        Value::Array(arr) => {
-            2 + arr.iter().map(estimate_json_size).sum::<usize>() + arr.len().saturating_sub(1)
-        }
-        Value::Object(obj) => {
-            2 + obj
-                .iter()
-                .map(|(k, v)| k.len() + 3 + estimate_json_size(v))
-                .sum::<usize>()
-                + obj.len().saturating_sub(1)
-        }
-    }
-}
-
 // ---- API Types ----
 
 /// Request body for the Claude Messages API.
