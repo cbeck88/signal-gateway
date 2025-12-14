@@ -26,7 +26,10 @@ pub enum Input {
 pub struct AssistantWorker {
     assistant: Box<dyn Assistant>,
     input_rx: mpsc::Receiver<Input>,
+    /// Used when the user wants to cancel the current requests, but not shutdown the service
     stop_rx: mpsc::Receiver<()>,
+    /// Used when the user wants to shut down the service
+    cancellation_token: CancellationToken,
 }
 
 impl AssistantWorker {
@@ -35,11 +38,13 @@ impl AssistantWorker {
         assistant: Box<dyn Assistant>,
         input_rx: mpsc::Receiver<Input>,
         stop_rx: mpsc::Receiver<()>,
+        cancellation_token: CancellationToken,
     ) -> Self {
         Self {
             assistant,
             input_rx,
             stop_rx,
+            cancellation_token,
         }
     }
 
@@ -51,22 +56,34 @@ impl AssistantWorker {
                     let Some(input) = input else {
                         break; // Channel closed
                     };
-                    self.handle_input(input).await;
+                    let was_canceled = self.handle_input(input).await;
+                    if was_canceled {
+                        // If the overall cancellation token was canceled,
+                        // then don't even bother calling handle_stop, just exit
+                        if self.cancellation_token.is_cancelled() {
+                            return;
+                        }
+                        self.handle_stop().await;
+                    }
                 }
                 _ = self.stop_rx.recv() => {
                     self.handle_stop().await;
+                }
+                _ = self.cancellation_token.cancelled() => {
+                    return;
                 }
             }
         }
     }
 
-    async fn handle_input(&mut self, input: Input) {
+    async fn handle_input(&mut self, input: Input) -> bool {
         match input {
             Input::Prompt(msg, sender) => {
-                // Make a cancel token for each new request
-                let cancel_token = CancellationToken::new();
+                // Make a child cancel token for each new request
+                let cancel_token = self.cancellation_token.child_token();
 
                 let mut assistant_fut = self.assistant.prompt(msg, cancel_token.clone());
+                let mut was_canceled = false;
 
                 // If the assistant finishes normally, return its result.
                 // If we get a stop request, cancel the token, then wait for assistant to finish.
@@ -76,6 +93,7 @@ impl AssistantWorker {
                     },
                     _ = self.stop_rx.recv() => {
                         cancel_token.cancel();
+                        was_canceled = true;
                         assistant_fut.await
                     }
                 };
@@ -91,15 +109,20 @@ impl AssistantWorker {
                 };
 
                 let _ = sender.send(response);
+
+                was_canceled
             }
             Input::Record(msg) => {
                 self.assistant.record_message(msg).await;
+                false
             }
             Input::Compact => {
                 self.assistant.compact().await;
+                false
             }
             Input::Debug => {
                 self.assistant.debug_log();
+                false
             }
         }
     }

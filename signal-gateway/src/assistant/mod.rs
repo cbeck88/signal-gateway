@@ -13,6 +13,7 @@ pub use signal_gateway_assistant::{
 use crate::message_handler::AdminMessageResponse;
 use chrono::{DateTime, Utc};
 use tokio::sync::{mpsc, oneshot};
+use tokio_util::sync::CancellationToken;
 use worker::{AssistantWorker, Input};
 
 /// Size of the request queue for the assistant worker.
@@ -39,8 +40,9 @@ pub enum AssistantError {
 pub struct AssistantAgent {
     input_tx: mpsc::Sender<Input>,
     stop_tx: mpsc::Sender<()>,
+    cancellation_token: CancellationToken,
     #[allow(dead_code)]
-    worker_handle: tokio::task::JoinHandle<()>,
+    worker_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl AssistantAgent {
@@ -50,18 +52,20 @@ impl AssistantAgent {
     pub fn new(assistant: Box<dyn Assistant>) -> Self {
         let (input_tx, input_rx) = mpsc::channel(REQUEST_QUEUE_SIZE);
         let (stop_tx, stop_rx) = mpsc::channel(REQUEST_QUEUE_SIZE);
+        let cancellation_token = CancellationToken::new();
 
-        let worker = AssistantWorker::new(assistant, input_rx, stop_rx);
+        let worker = AssistantWorker::new(assistant, input_rx, stop_rx, cancellation_token.clone());
 
-        let worker_handle = tokio::spawn(async move {
+        let worker_handle = Some(tokio::spawn(async move {
             worker.run().await;
             tracing::info!("Assistant worker task exited");
-        });
+        }));
 
         Self {
             input_tx,
             stop_tx,
             worker_handle,
+            cancellation_token,
         }
     }
 
@@ -111,8 +115,14 @@ impl AssistantAgent {
         let _ = self.input_tx.try_send(Input::Debug);
     }
 
-    /// Request the worker to stop processing and cancel pending requests.
+    /// Request the worker to stop what it's doing and cancel pending requests (but not exit).
     pub fn request_stop(&self) {
         let _ = self.stop_tx.try_send(());
+    }
+}
+
+impl Drop for AssistantAgent {
+    fn drop(&mut self) {
+        self.cancellation_token.cancel();
     }
 }
