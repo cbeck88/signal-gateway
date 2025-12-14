@@ -25,7 +25,9 @@ pub trait Assistant: Send {
     ///
     /// This is called when the user explicitly requests compaction.
     /// Automatic compaction is an internal implementation detail.
-    async fn compact(&mut self);
+    ///
+    /// The cancellation token can be used to interrupt the operation.
+    async fn compact(&mut self, cancel: CancellationToken);
 
     /// Log the assistant's current state for debugging.
     fn debug_log(&mut self);

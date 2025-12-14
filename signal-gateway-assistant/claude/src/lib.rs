@@ -175,7 +175,7 @@ impl ClaudeAssistant {
         };
 
         if can_compact {
-            self.do_compact(true).await;
+            self.do_compact(true, None).await;
         } else {
             self.drop_oldest_messages();
         }
@@ -216,7 +216,9 @@ impl ClaudeAssistant {
     }
 
     /// Perform compaction by summarizing messages and storing the result.
-    async fn do_compact(&mut self, is_automatic: bool) {
+    ///
+    /// If `cancel` is provided, the operation can be interrupted.
+    async fn do_compact(&mut self, is_automatic: bool, cancel: Option<&CancellationToken>) {
         if self.messages.is_empty() {
             return;
         }
@@ -257,15 +259,26 @@ impl ClaudeAssistant {
             tools: Vec::new(),
         };
 
-        let result = self
+        let http_fut = self
             .client
             .post(&self.config.claude_api_url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_API_VERSION)
             .header("content-type", "application/json")
             .json(&request_body)
-            .send()
-            .await;
+            .send();
+
+        let result = if let Some(cancel) = cancel {
+            tokio::select! {
+                result = http_fut => result,
+                _ = cancel.cancelled() => {
+                    info!("Compaction cancelled");
+                    return;
+                }
+            }
+        } else {
+            http_fut.await
+        };
 
         match result {
             Ok(response) if response.status().is_success() => {
@@ -469,9 +482,9 @@ impl Assistant for ClaudeAssistant {
         Ok(self.handle_request(&cancel).await?)
     }
 
-    async fn compact(&mut self) {
+    async fn compact(&mut self, cancel: CancellationToken) {
         // Manual compaction always runs (is_automatic = false)
-        self.do_compact(false).await;
+        self.do_compact(false, Some(&cancel)).await;
     }
 
     fn debug_log(&mut self) {

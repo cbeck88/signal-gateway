@@ -117,7 +117,17 @@ impl AssistantWorker {
                 false
             }
             Input::Compact => {
-                self.assistant.compact().await;
+                let cancel_token = self.cancellation_token.child_token();
+                let mut compact_fut = self.assistant.compact(cancel_token.clone());
+
+                tokio::select! {
+                    _ = &mut compact_fut => {},
+                    _ = self.stop_rx.recv() => {
+                        cancel_token.cancel();
+                        compact_fut.await;
+                        return true;
+                    }
+                };
                 false
             }
             Input::Debug => {
