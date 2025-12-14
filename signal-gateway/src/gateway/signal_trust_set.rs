@@ -5,13 +5,11 @@
 //! - Sequence: `["uuid1", "uuid2"]` - UUIDs with no safety numbers (simpler)
 
 use crate::signal_jsonrpc::{Envelope, Identity, RpcClient};
-use serde::de::{MapAccess, SeqAccess, Visitor};
-use serde::{Deserialize, Deserializer};
-use std::borrow::Borrow;
-use std::collections::HashMap;
-use std::fmt;
-use std::ops::Deref;
-use std::str::FromStr;
+use serde::{
+    Deserialize, Deserializer,
+    de::{MapAccess, SeqAccess, Visitor},
+};
+use std::{borrow::Borrow, collections::HashMap, fmt, ops::Deref, str::FromStr};
 use tracing::{debug, info, warn};
 
 /// A validated Signal UUID in the format `xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx`.

@@ -5,8 +5,7 @@ use crate::message_handler::AdminMessageResponse;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::PathBuf;
-use std::sync::Weak;
+use std::{path::PathBuf, sync::Weak};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{error, info, warn};
 
@@ -94,6 +93,8 @@ pub struct ClaudeWorker {
     tool_executor: Weak<dyn ToolExecutor>,
     input_rx: mpsc::Receiver<Input>,
     stop_rx: mpsc::Receiver<()>,
+    /// Timestamp of the last automatic compaction (not user-requested).
+    last_auto_compaction: Option<std::time::Instant>,
 }
 
 impl ClaudeWorker {
@@ -137,6 +138,7 @@ impl ClaudeWorker {
             tool_executor,
             input_rx,
             stop_rx,
+            last_auto_compaction: None,
         })
     }
 
@@ -154,10 +156,22 @@ impl ClaudeWorker {
                             let (mc, maybe_sender) = msg.into_content_and_sender();
                             self.messages.push(mc);
 
-                            // Check if we need to trigger compaction
+                            // Check if we need to trigger automatic compaction
                             let buffer_chars = self.message_buffer_chars();
                             if buffer_chars > self.config.compaction.trigger_chars as usize {
-                                self.handle_compact().await;
+                                // Check if rate limiting is configured
+                                let can_compact = match self.config.compaction.min_interval {
+                                    None => true, // No rate limit configured
+                                    Some(min_interval) => self.last_auto_compaction
+                                        .map(|t| t.elapsed() >= min_interval)
+                                        .unwrap_or(true),
+                                };
+                                if can_compact {
+                                    self.handle_compact(true).await;
+                                } else {
+                                    // Rate limited - drop oldest messages instead
+                                    self.drop_oldest_messages();
+                                }
                             }
 
                             if let Some(sender) = maybe_sender {
@@ -171,7 +185,7 @@ impl ClaudeWorker {
                             }
                         },
                         Input::Compact => {
-                            self.handle_compact().await;
+                            self.handle_compact(false).await;
                         }
                         Input::Debug => {
                             self.handle_debug();
@@ -200,6 +214,43 @@ impl ClaudeWorker {
                     .sum::<usize>()
             })
             .sum()
+    }
+
+    /// Drop oldest messages until buffer is under the trigger threshold.
+    fn drop_oldest_messages(&mut self) {
+        let target = self.config.compaction.trigger_chars as usize;
+        let before_chars = self.message_buffer_chars();
+
+        if before_chars <= target {
+            return;
+        }
+
+        let mut current_chars = before_chars;
+        let mut dropped = 0;
+
+        // Remove from the front (oldest) until under limit
+        while current_chars > target && !self.messages.is_empty() {
+            let msg_chars = self.messages[0]
+                .content
+                .iter()
+                .map(|block| match block {
+                    ContentBlock::Text { text } => text.len(),
+                    ContentBlock::ToolUse { input, .. } => estimate_json_size(input),
+                    ContentBlock::ToolResult { content, .. } => content.len(),
+                })
+                .sum::<usize>();
+            current_chars = current_chars.saturating_sub(msg_chars);
+            self.messages.remove(0);
+            dropped += 1;
+        }
+
+        let after_chars = self.message_buffer_chars();
+        warn!(
+            "Compaction rate-limited: dropped {} oldest messages ({} -> {} chars)",
+            dropped,
+            before_chars,
+            after_chars
+        );
     }
 
     /// Handle a stop request by draining queues and sending errors to pending requests.
@@ -232,16 +283,26 @@ impl ClaudeWorker {
     }
 
     /// Perform compaction by summarizing messages and storing the result.
-    async fn handle_compact(&mut self) {
+    ///
+    /// If `is_automatic` is true, this was triggered by buffer size threshold
+    /// and the last_auto_compaction timestamp will be updated.
+    async fn handle_compact(&mut self, is_automatic: bool) {
         if self.messages.is_empty() {
             return;
+        }
+
+        // Update timestamp for automatic compactions (before the API call)
+        if is_automatic {
+            self.last_auto_compaction = Some(std::time::Instant::now());
         }
 
         let num_messages = self.messages.len();
         let buffer_chars = self.message_buffer_chars();
         warn!(
-            "Starting compaction: {} messages, {} chars",
-            num_messages, buffer_chars
+            "Starting {} compaction: {} messages, {} chars",
+            if is_automatic { "automatic" } else { "manual" },
+            num_messages,
+            buffer_chars
         );
 
         // Build system content: compaction prompt first, then other system prompts, then existing summary

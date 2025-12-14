@@ -21,7 +21,10 @@ use http_body::Body;
 use http_body_util::BodyExt;
 use prometheus_http_client::{AlertStatus, ExtractLabels};
 use std::{
-    fmt::Write, net::SocketAddr, path::PathBuf, sync::Arc, sync::Mutex, sync::OnceLock, sync::Weak,
+    fmt::Write,
+    net::SocketAddr,
+    path::PathBuf,
+    sync::{Arc, Mutex, OnceLock, Weak},
     time::Duration,
 };
 use tokio::{

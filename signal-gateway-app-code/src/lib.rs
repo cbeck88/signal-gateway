@@ -267,9 +267,7 @@ impl AppCode {
     /// If `path` is None or empty, lists the root directory.
     pub async fn ls(&self, path: Option<&str>) -> Result<String, String> {
         let cache = self.get_current_tarball().await;
-        let cached = cache
-            .as_ref()
-            .ok_or("source code not available")?;
+        let cached = cache.as_ref().ok_or("source code not available")?;
 
         let prefix = path.unwrap_or("").trim_start_matches('/');
         let prefix = if prefix.is_empty() {
@@ -293,16 +291,17 @@ impl AppCode {
 
                 // Get just the first component (file or directory name)
                 if let Some(first) = remainder.split('/').next()
-                    && !first.is_empty() {
-                        // Check if it's a directory (has more components)
-                        let is_dir = remainder.contains('/');
-                        let entry = if is_dir {
-                            format!("{}/", first)
-                        } else {
-                            first.to_string()
-                        };
-                        entries.insert(entry);
-                    }
+                    && !first.is_empty()
+                {
+                    // Check if it's a directory (has more components)
+                    let is_dir = remainder.contains('/');
+                    let entry = if is_dir {
+                        format!("{}/", first)
+                    } else {
+                        first.to_string()
+                    };
+                    entries.insert(entry);
+                }
             }
         }
 
@@ -321,9 +320,7 @@ impl AppCode {
     /// Supports simple glob patterns with `*` wildcards.
     pub async fn find(&self, pattern: Option<&str>) -> Result<String, String> {
         let cache = self.get_current_tarball().await;
-        let cached = cache
-            .as_ref()
-            .ok_or("source code not available")?;
+        let cached = cache.as_ref().ok_or("source code not available")?;
 
         let pattern = pattern.unwrap_or("*");
 
@@ -357,9 +354,7 @@ impl AppCode {
         line_end: Option<usize>,
     ) -> Result<String, String> {
         let cache = self.get_current_tarball().await;
-        let cached = cache
-            .as_ref()
-            .ok_or("source code not available")?;
+        let cached = cache.as_ref().ok_or("source code not available")?;
 
         let path = path.trim_start_matches('/');
         let file = cached
@@ -404,9 +399,7 @@ impl AppCode {
         let regex = Regex::new(pattern).map_err(|e| format!("Invalid regex: {e}"))?;
 
         let cache = self.get_current_tarball().await;
-        let cached = cache
-            .as_ref()
-            .ok_or("source code not available")?;
+        let cached = cache.as_ref().ok_or("source code not available")?;
 
         let prefix = path_prefix.map(|p| p.trim_start_matches('/'));
 
@@ -421,9 +414,10 @@ impl AppCode {
         'outer: for (path, file) in sorted_files {
             // Skip if path doesn't match prefix
             if let Some(prefix) = prefix
-                && !path.starts_with(prefix) {
-                    continue;
-                }
+                && !path.starts_with(prefix)
+            {
+                continue;
+            }
 
             // Skip binary-looking files
             if looks_binary(&file.content) {
@@ -472,10 +466,11 @@ impl AppCode {
 
                         // Add separator if there's a gap
                         if let Some(&last) = printed.iter().next_back()
-                            && start > last + 1 {
-                                writeln!(&mut output, "---")
-                                    .map_err(|e| format!("Format error: {e}"))?;
-                            }
+                            && start > last + 1
+                        {
+                            writeln!(&mut output, "---")
+                                .map_err(|e| format!("Format error: {e}"))?;
+                        }
 
                         for (i, line) in lines[start..end].iter().enumerate() {
                             let line_idx = start + i;
@@ -662,8 +657,7 @@ impl ToolExecutor for AppCodeTools {
             },
             Tool {
                 name: "code_search",
-                description:
-                    "Search for a regex pattern in an application's source code (like grep).",
+                description: "Search for a regex pattern in an application's source code (like grep).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {

@@ -5,8 +5,7 @@ use prometheus_http_client::{
     AlertInfo, AlertsRequest, ExtractLabels, Labels, LabelsRequest, MetricVal, MetricValue,
     PromRequest, QueryRequest, ReqwestClient, SeriesRequest,
 };
-use std::error::Error;
-use std::fmt::Write;
+use std::{error::Error, fmt::Write};
 use tracing::info;
 
 type BoxError = Box<dyn Error + Send + Sync>;

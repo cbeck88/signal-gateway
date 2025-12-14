@@ -9,8 +9,7 @@ pub use worker::SentBy;
 use crate::message_handler::AdminMessageResponse;
 use chrono::{DateTime, Utc};
 use conf::Conf;
-use std::path::PathBuf;
-use std::sync::Weak;
+use std::{path::PathBuf, sync::Weak, time::Duration};
 use tokio::sync::{mpsc, oneshot};
 use worker::{ChatMessage, ClaudeWorker, Input};
 
@@ -69,6 +68,11 @@ pub struct CompactionConfig {
     /// Trigger compaction when message buffer exceeds this many characters.
     #[conf(long, env, default_value = "50000")]
     pub trigger_chars: u32,
+    /// Minimum interval between automatic compactions (not user-requested).
+    /// If omitted, AI compaction always runs (no rate limiting).
+    /// If set, compaction is rate-limited and low-priority messages are dropped instead.
+    #[conf(long, env, value_parser = conf_extra::parse_duration, serde(use_value_parser))]
+    pub min_interval: Option<Duration>,
 }
 
 /// Error type for Claude API operations.
@@ -172,7 +176,7 @@ impl ClaudeAgent {
         result_rx.await.map_err(|_| ClaudeError::WorkerGone)?
     }
 
-    /// Record a message into claude's chat log that claude is not expected to respond to
+    /// Record a message into claude's chat log that claude is not expected to respond to.
     pub fn record_message(&self, sent_by: SentBy, text: &str, ts_ms: u64) {
         let timestamp = DateTime::from_timestamp_millis(ts_ms as i64).unwrap_or_else(Utc::now);
         let msg = ChatMessage {

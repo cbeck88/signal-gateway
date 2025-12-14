@@ -26,21 +26,20 @@ impl AppCodeConfigExt {
             let url = url.clone();
             let client = client.clone();
             Box::pin(async move {
-                let response = client
-                    .get(url.as_str())
-                    .send()
-                    .await
-                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                let response = client.get(url.as_str()).send().await.map_err(
+                    |e| -> Box<dyn std::error::Error + Send + Sync> {
                         Box::new(std::io::Error::other(format!(
                             "HTTP request to {url} failed: {e}"
                         )))
-                    })?;
+                    },
+                )?;
 
                 if !response.status().is_success() {
                     return Err(Box::new(std::io::Error::other(format!(
                         "HTTP request to {url} returned {}",
                         response.status()
-                    ))) as Box<dyn std::error::Error + Send + Sync>);
+                    )))
+                        as Box<dyn std::error::Error + Send + Sync>);
                 }
 
                 let mut sha = response
