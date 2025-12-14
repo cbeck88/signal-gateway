@@ -19,11 +19,7 @@ use admin_http::AdminHttpConfig;
 mod app_code;
 use app_code::AppCodeConfigExt;
 
-mod syslog;
-use syslog::SyslogConfig;
-
-pub mod json;
-use json::JsonConfig;
+use signal_gateway_log_ingest::{JsonConfig, SyslogConfig};
 
 /// Top-level configuration for signal-gateway.
 #[derive(Conf, Debug)]
@@ -48,7 +44,7 @@ pub struct Config {
     #[conf(flatten, prefix)]
     admin_http: Option<AdminHttpConfig>,
     /// Application source code configurations for Claude tools.
-    #[conf(long, env, value_parser = serde_json::from_str)]
+    #[conf(long, env, value_parser = serde_json::from_str, default, default_help_str = "[]")]
     app_code: Vec<AppCodeConfigExt>,
     #[conf(flatten, serde(flatten))]
     gateway: GatewayConfig,

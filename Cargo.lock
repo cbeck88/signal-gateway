@@ -1764,7 +1764,6 @@ name = "signal-gateway-bin"
 version = "0.1.0"
 dependencies = [
  "async-trait",
- "chrono",
  "conf",
  "conf-extra",
  "dotenvy",
@@ -1775,13 +1774,27 @@ dependencies = [
  "serde_json",
  "signal-gateway",
  "signal-gateway-app-code",
- "syslog_rfc5424",
+ "signal-gateway-log-ingest",
  "tokio",
  "tokio-util",
  "toml",
  "tracing",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "signal-gateway-log-ingest"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "conf",
+ "serde",
+ "serde_json",
+ "signal-gateway",
+ "syslog_rfc5424",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

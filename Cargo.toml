@@ -5,6 +5,7 @@ members = [
     "signal-gateway",
     "signal-gateway-app-code",
     "signal-gateway-bin",
+    "signal-gateway-log-ingest",
 ]
 
 [workspace.package]

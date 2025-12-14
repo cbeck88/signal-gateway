@@ -18,9 +18,9 @@ rustls-tls = ["signal-gateway/rustls-tls"]
 [dependencies]
 signal-gateway = { path = "../signal-gateway" }
 signal-gateway-app-code = { path = "../signal-gateway-app-code" }
+signal-gateway-log-ingest = { path = "../signal-gateway-log-ingest" }
 
 async-trait = { workspace = true }
-chrono = { workspace = true }
 conf = { workspace = true }
 conf-extra = { workspace = true }
 dotenvy = { workspace = true }
@@ -30,7 +30,6 @@ reqwest = { workspace = true }
 url = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-syslog_rfc5424 = { workspace = true }
 toml = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "signal"] }
 tokio-util = { workspace = true }

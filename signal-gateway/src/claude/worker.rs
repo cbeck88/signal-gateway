@@ -247,9 +247,7 @@ impl ClaudeWorker {
         let after_chars = self.message_buffer_chars();
         warn!(
             "Compaction rate-limited: dropped {} oldest messages ({} -> {} chars)",
-            dropped,
-            before_chars,
-            after_chars
+            dropped, before_chars, after_chars
         );
     }
 
