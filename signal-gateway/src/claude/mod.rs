@@ -171,7 +171,7 @@ impl ClaudeAgent {
             .try_send(Input::Chat(msg))
             .map_err(|_| ClaudeError::QueueFull)?;
 
-        // result_rx.await has type Result<Result<String, ClaudeError>, RecvError>
+        // result_rx.await has type Result<Result<_, ClaudeError>, RecvError>
         // The outer Result is for channel errors, the inner is the actual response
         result_rx.await.map_err(|_| ClaudeError::WorkerGone)?
     }
