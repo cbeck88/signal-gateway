@@ -27,7 +27,6 @@ pub struct AssistantWorker {
     assistant: Box<dyn Assistant>,
     input_rx: mpsc::Receiver<Input>,
     stop_rx: mpsc::Receiver<()>,
-    cancel_token: CancellationToken,
 }
 
 impl AssistantWorker {
@@ -41,7 +40,6 @@ impl AssistantWorker {
             assistant,
             input_rx,
             stop_rx,
-            cancel_token: CancellationToken::new(),
         }
     }
 
@@ -65,10 +63,22 @@ impl AssistantWorker {
     async fn handle_input(&mut self, input: Input) {
         match input {
             Input::Prompt(msg, sender) => {
-                // Reset the cancel token for each new request
-                self.cancel_token = CancellationToken::new();
+                // Make a cancel token for each new request
+                let cancel_token = CancellationToken::new();
 
-                let result = self.assistant.prompt(msg, self.cancel_token.clone()).await;
+                let mut assistant_fut = self.assistant.prompt(msg, cancel_token.clone());
+
+                // If the assistant finishes normally, return its result.
+                // If we get a stop request, cancel the token, then wait for assistant to finish.
+                let result = tokio::select! {
+                    result = &mut assistant_fut => {
+                        result
+                    },
+                    _ = self.stop_rx.recv() => {
+                        cancel_token.cancel();
+                        assistant_fut.await
+                    }
+                };
 
                 let response = match result {
                     Ok(Some(resp)) => Ok(assistant_response_to_admin(resp)),
@@ -95,9 +105,6 @@ impl AssistantWorker {
     }
 
     async fn handle_stop(&mut self) {
-        // Cancel any in-progress request
-        self.cancel_token.cancel();
-
         // Drain remaining stop signals
         while self.stop_rx.try_recv().is_ok() {}
 

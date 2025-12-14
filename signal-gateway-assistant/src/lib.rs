@@ -1,7 +1,9 @@
 //! Assistant API used by signal-gateway.
 //!
-//! This crate provides abstract types for LLM assistant interactions,
-//! making it easy to swap in different LLM implementations.
+//! Implement the `Assistant` trait to swap in your own LLM, context management, etc.
+//!
+//! The assistant trait is unopinionated and you should be able to use something like
+//! `rsllm` or `rig` with relative ease if you want to.
 
 mod assistant;
 mod chat_message;
