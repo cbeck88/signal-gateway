@@ -1,87 +1,94 @@
-//! Background worker that processes Claude API requests serially.
+//! Claude API implementation of the Assistant trait.
 
-use super::{ANTHROPIC_API_VERSION, ClaudeConfig, ClaudeError, Tool, ToolExecutor};
-use crate::message_handler::AdminMessageResponse;
-use chrono::{DateTime, Utc};
+use conf::Conf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{path::PathBuf, sync::Weak};
-use tokio::sync::{mpsc, oneshot};
+use signal_gateway_assistant::{Assistant, AssistantResponse, ChatMessage, Tool, ToolExecutor};
+use std::{path::PathBuf, sync::Weak, time::Duration};
+use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 
-/// Sent with inputs to claude that claude is expected to respond to. The sender
-/// gives the worker a way to return the results to the caller asynchronously.
-pub type ResultSender = oneshot::Sender<Result<AdminMessageResponse, ClaudeError>>;
+/// The Anthropic API version header value.
+const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 
-/// Indicates the "role" i.e. the manner in which a particular message was sent
-pub enum SentBy {
-    /// User message directed at the system (commands, etc.)
-    UserToSystem,
-    /// User message directed at Claude (prompts)
-    UserToClaude,
-    /// Response from Claude
-    Claude,
-    /// System-generated message
-    System,
-    /// Alert from alertmanager
-    AlertManager,
+/// Configuration for the Claude API integration.
+#[derive(Clone, Conf, Debug)]
+#[conf(serde)]
+pub struct ClaudeConfig {
+    /// Path to file containing the Claude API key.
+    #[conf(long, env)]
+    pub api_key_file: PathBuf,
+    /// Paths to files containing system prompt components (in order, last one is cached).
+    #[conf(repeat, long, env)]
+    pub system_prompt_files: Vec<PathBuf>,
+    /// Claude API URL.
+    #[conf(long, env, default_value = "https://api.anthropic.com/v1/messages")]
+    pub claude_api_url: String,
+    /// Claude model to use.
+    #[conf(long, env, default_value = "claude-sonnet-4-5-20250929")]
+    pub claude_model: String,
+    /// Maximum tokens in the response.
+    #[conf(long, env, default_value = "1024")]
+    pub claude_max_tokens: u32,
+    /// Maximum tool use iterations before giving up.
+    #[conf(long, env, default_value = "10")]
+    pub claude_max_iterations: u32,
+    /// Enable prompt caching (adds cache_control to system prompts).
+    #[conf(long, env)]
+    pub prompt_caching: bool,
+    /// Compaction configuration.
+    #[conf(flatten, prefix)]
+    pub compaction: CompactionConfig,
 }
 
-impl SentBy {
-    /// Returns the API role: "assistant" for Claude, "user" for everything else.
-    fn api_role(&self) -> &'static str {
-        match self {
-            Self::Claude => "assistant",
-            _ => "user",
-        }
-    }
-
-    /// Returns a prefix to prepend to message text for context.
-    fn prefix(&self) -> Option<&'static str> {
-        match self {
-            Self::UserToSystem => Some("[user to system]"),
-            Self::UserToClaude => None, // No prefix needed for direct user messages
-            Self::Claude => None,
-            Self::System => Some("[system]"),
-            Self::AlertManager => Some("[alertmanager]"),
-        }
-    }
+/// Configuration for message buffer compaction.
+#[derive(Clone, Conf, Debug)]
+#[conf(serde)]
+pub struct CompactionConfig {
+    /// Path to file containing the compaction prompt.
+    #[conf(long, env)]
+    pub prompt_file: PathBuf,
+    /// Model to use for compaction (typically a faster/cheaper model).
+    #[conf(long, env, default_value = "claude-sonnet-4-5-20250929")]
+    pub model: String,
+    /// Maximum tokens for the compaction response.
+    #[conf(long, env, default_value = "2048")]
+    pub max_tokens: u32,
+    /// Trigger compaction when message buffer exceeds this many characters.
+    #[conf(long, env, default_value = "50000")]
+    pub trigger_chars: u32,
+    /// Minimum interval between automatic compactions (not user-requested).
+    /// If omitted, AI compaction always runs (no rate limiting).
+    /// If set, compaction is rate-limited and low-priority messages are dropped instead.
+    #[conf(long, env, value_parser = conf_extra::parse_duration, serde(use_value_parser))]
+    pub min_interval: Option<Duration>,
 }
 
-/// An input to the worker sent through the channel
-pub enum Input {
-    Chat(ChatMessage),
-    Compact,
-    Debug,
+/// Error type for Claude API operations.
+#[derive(Debug, thiserror::Error)]
+pub enum ClaudeError {
+    /// Failed to read API key file.
+    #[error("failed to read API key file: {0}")]
+    ApiKeyRead(std::io::Error),
+    /// Failed to read system prompt file.
+    #[error("failed to read system prompt file {0:?}: {1}")]
+    SystemPromptRead(PathBuf, std::io::Error),
+    /// HTTP request failed.
+    #[error("HTTP request failed: {0}")]
+    Request(#[from] reqwest::Error),
+    /// API returned an error response.
+    #[error("API error: {0}")]
+    ApiError(Box<str>),
+    /// Too many tool use iterations.
+    #[error("exceeded maximum tool use iterations ({0})")]
+    TooManyIterations(u32),
+    /// Tool executor is no longer available.
+    #[error("tool executor is gone")]
+    ToolExecutorGone,
 }
 
-/// A chat message
-pub struct ChatMessage {
-    pub sent_by: SentBy,
-    pub timestamp: DateTime<Utc>,
-    pub text: Box<str>,
-    /// Present when claude is expected to respond to the message
-    pub result_sender: Option<ResultSender>,
-}
-
-impl ChatMessage {
-    fn into_content_and_sender(self) -> (MessageContent, Option<ResultSender>) {
-        let ts = self.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ");
-        let text = match self.sent_by.prefix() {
-            Some(prefix) => format!("[{}] {} {}", ts, prefix, self.text).into(),
-            None => format!("[{}] {}", ts, self.text).into(),
-        };
-        let mc = MessageContent {
-            role: self.sent_by.api_role().into(),
-            content: vec![ContentBlock::Text { text }],
-        };
-
-        (mc, self.result_sender)
-    }
-}
-
-/// Background worker that processes Claude API requests serially.
-pub struct ClaudeWorker {
+/// Claude API assistant implementation.
+pub struct ClaudeAssistant {
     config: ClaudeConfig,
     client: reqwest::Client,
     api_key: String,
@@ -91,41 +98,35 @@ pub struct ClaudeWorker {
     summary: String,
     messages: Vec<MessageContent>,
     tool_executor: Weak<dyn ToolExecutor>,
-    input_rx: mpsc::Receiver<Input>,
-    stop_rx: mpsc::Receiver<()>,
     /// Timestamp of the last automatic compaction (not user-requested).
     last_auto_compaction: Option<std::time::Instant>,
 }
 
-impl ClaudeWorker {
-    /// Create a new Claude worker.
+impl ClaudeAssistant {
+    /// Create a new Claude assistant from configuration.
     ///
     /// Reads the API key, system prompts, and compaction prompt from the configured files.
     pub fn new(
         config: ClaudeConfig,
         tool_executor: Weak<dyn ToolExecutor>,
-        input_rx: mpsc::Receiver<Input>,
-        stop_rx: mpsc::Receiver<()>,
     ) -> Result<Self, ClaudeError> {
         let api_key = std::fs::read_to_string(&config.api_key_file)
             .map_err(ClaudeError::ApiKeyRead)?
             .trim()
-            .to_owned();
+            .to_string();
 
-        let system_prompts: Vec<String> = config
+        let system_prompts: Result<Vec<String>, ClaudeError> = config
             .system_prompt_files
             .iter()
             .map(|path| {
                 std::fs::read_to_string(path)
                     .map_err(|e| ClaudeError::SystemPromptRead(path.clone(), e))
             })
-            .collect::<Result<_, _>>()?;
+            .collect();
+        let system_prompts = system_prompts?;
 
-        let compaction_prompt = {
-            let path = &config.compaction.prompt_file;
-            std::fs::read_to_string(path)
-                .map_err(|e| ClaudeError::SystemPromptRead(path.clone(), e))?
-        };
+        let compaction_prompt = std::fs::read_to_string(&config.compaction.prompt_file)
+            .map_err(|e| ClaudeError::SystemPromptRead(config.compaction.prompt_file.clone(), e))?;
 
         Ok(Self {
             config,
@@ -134,69 +135,10 @@ impl ClaudeWorker {
             system_prompts,
             compaction_prompt,
             summary: String::new(),
-            messages: Default::default(),
+            messages: Vec::new(),
             tool_executor,
-            input_rx,
-            stop_rx,
             last_auto_compaction: None,
         })
-    }
-
-    /// Run the worker loop, processing requests serially.
-    pub async fn run(mut self) {
-        loop {
-            tokio::select! {
-                input = self.input_rx.recv() => {
-                    let Some(input) = input else {
-                        // Channel closed, exit
-                        break;
-                    };
-                    match input {
-                        Input::Chat(msg) => {
-                            let (mc, maybe_sender) = msg.into_content_and_sender();
-                            self.messages.push(mc);
-
-                            // Check if we need to trigger automatic compaction
-                            let buffer_chars = self.message_buffer_chars();
-                            if buffer_chars > self.config.compaction.trigger_chars as usize {
-                                // Check if rate limiting is configured
-                                let can_compact = match self.config.compaction.min_interval {
-                                    None => true, // No rate limit configured
-                                    Some(min_interval) => self.last_auto_compaction
-                                        .map(|t| t.elapsed() >= min_interval)
-                                        .unwrap_or(true),
-                                };
-                                if can_compact {
-                                    self.handle_compact(true).await;
-                                } else {
-                                    // Rate limited - drop oldest messages instead
-                                    self.drop_oldest_messages();
-                                }
-                            }
-
-                            if let Some(sender) = maybe_sender {
-                                let result = self.handle_request().await;
-                                // If handle_request was interrupted by stop request, go on to drain the queues
-                                if matches!(result, Err(ClaudeError::StopRequested)) {
-                                    self.handle_stop();
-                                }
-                                // Ignore send errors - the caller may have dropped the receiver
-                                let _ = sender.send(result);
-                            }
-                        },
-                        Input::Compact => {
-                            self.handle_compact(false).await;
-                        }
-                        Input::Debug => {
-                            self.handle_debug();
-                        }
-                    }
-                }
-                _ = self.stop_rx.recv() => {
-                    self.handle_stop();
-                }
-            }
-        }
     }
 
     /// Calculate total characters in the message buffer.
@@ -216,6 +158,29 @@ impl ClaudeWorker {
             .sum()
     }
 
+    /// Check if automatic compaction should be triggered and handle it.
+    async fn maybe_compact(&mut self) {
+        let buffer_chars = self.message_buffer_chars();
+        if buffer_chars <= self.config.compaction.trigger_chars as usize {
+            return;
+        }
+
+        // Check if rate limiting is configured
+        let can_compact = match self.config.compaction.min_interval {
+            None => true,
+            Some(min_interval) => self
+                .last_auto_compaction
+                .map(|t| t.elapsed() >= min_interval)
+                .unwrap_or(true),
+        };
+
+        if can_compact {
+            self.do_compact(true).await;
+        } else {
+            self.drop_oldest_messages();
+        }
+    }
+
     /// Drop oldest messages until buffer is under the trigger threshold.
     fn drop_oldest_messages(&mut self) {
         let target = self.config.compaction.trigger_chars as usize;
@@ -228,7 +193,6 @@ impl ClaudeWorker {
         let mut current_chars = before_chars;
         let mut dropped = 0;
 
-        // Remove from the front (oldest) until under limit
         while current_chars > target && !self.messages.is_empty() {
             let msg_chars = self.messages[0]
                 .content
@@ -251,45 +215,12 @@ impl ClaudeWorker {
         );
     }
 
-    /// Handle a stop request by draining queues and sending errors to pending requests.
-    fn handle_stop(&mut self) {
-        // Drain the stop_rx queue
-        while self.stop_rx.try_recv().is_ok() {}
-
-        // Drain the input_rx queue and send StopRequested to each prompt request
-        while let Ok(input) = self.input_rx.try_recv() {
-            match input {
-                Input::Chat(msg) => {
-                    let (mc, maybe_sender) = msg.into_content_and_sender();
-                    self.messages.push(mc);
-                    if let Some(sender) = maybe_sender {
-                        let _ = sender.send(Err(ClaudeError::StopRequested));
-                    }
-                }
-                Input::Compact | Input::Debug => {}
-            }
-        }
-    }
-
-    /// Check if stop has been requested.
-    fn check_stop(&mut self) -> Result<(), ClaudeError> {
-        match self.stop_rx.try_recv() {
-            Ok(()) => Err(ClaudeError::StopRequested),
-            Err(mpsc::error::TryRecvError::Empty) => Ok(()),
-            Err(mpsc::error::TryRecvError::Disconnected) => Err(ClaudeError::StopRequested),
-        }
-    }
-
     /// Perform compaction by summarizing messages and storing the result.
-    ///
-    /// If `is_automatic` is true, this was triggered by buffer size threshold
-    /// and the last_auto_compaction timestamp will be updated.
-    async fn handle_compact(&mut self, is_automatic: bool) {
+    async fn do_compact(&mut self, is_automatic: bool) {
         if self.messages.is_empty() {
             return;
         }
 
-        // Update timestamp for automatic compactions (before the API call)
         if is_automatic {
             self.last_auto_compaction = Some(std::time::Instant::now());
         }
@@ -312,7 +243,6 @@ impl ClaudeWorker {
         if !self.summary.is_empty() {
             system.push(SystemContent::text(&self.summary));
         }
-        // Mark the last one as cached if prompt caching is enabled
         if self.config.prompt_caching
             && let Some(last) = system.last_mut()
         {
@@ -341,13 +271,12 @@ impl ClaudeWorker {
             Ok(response) if response.status().is_success() => {
                 match response.json::<MessagesResponse>().await {
                     Ok(parsed) => {
-                        // Extract text from response
                         let summary_text: String = parsed
                             .content
                             .into_iter()
                             .filter_map(|block| {
                                 if let ContentBlock::Text { text } = block {
-                                    Some(text)
+                                    Some(String::from(text))
                                 } else {
                                     None
                                 }
@@ -355,7 +284,6 @@ impl ClaudeWorker {
                             .collect::<Vec<_>>()
                             .join("\n");
 
-                        // Wrap in XML tags and store
                         self.summary =
                             format!("<summary type=\"activity\">\n{}\n</summary>", summary_text);
                         self.messages.clear();
@@ -382,25 +310,18 @@ impl ClaudeWorker {
         }
     }
 
-    /// Log the message buffer for debugging.
-    fn handle_debug(&self) {
-        if self.summary.is_empty() {
-            info!("Claude summary: (empty)");
-        } else {
-            info!("Claude summary:\n{}", self.summary);
-        }
-        info!("Claude message buffer:\n{:#?}", self.messages);
-    }
-
-    /// Handle a single request to the Claude API.
-    async fn handle_request(&mut self) -> Result<AdminMessageResponse, ClaudeError> {
+    /// Handle a single request to the Claude API with tool use loop.
+    ///
+    /// Returns `Ok(None)` if the operation was cancelled.
+    async fn handle_request(
+        &mut self,
+        cancel: &CancellationToken,
+    ) -> Result<Option<AssistantResponse>, ClaudeError> {
         let max_iterations = self.config.claude_max_iterations;
 
-        // Get tools from the executor if still alive
         let executor = self.tool_executor.upgrade();
         let tools = executor.as_ref().map(|te| te.tools()).unwrap_or_default();
 
-        // Collect attachments from tool results across all iterations
         let mut attachments: Vec<PathBuf> = Vec::new();
 
         if let Some(last) = self.messages.last()
@@ -409,7 +330,7 @@ impl ClaudeWorker {
             info!("Claude request: {}", text);
         }
 
-        // Build system content blocks: system prompts + summary (if any), caching only the last one
+        // Build system content blocks
         let mut system: Vec<SystemContent> = self
             .system_prompts
             .iter()
@@ -418,7 +339,6 @@ impl ClaudeWorker {
         if !self.summary.is_empty() {
             system.push(SystemContent::text(&self.summary));
         }
-        // Mark the last one as cached if prompt caching is enabled
         if self.config.prompt_caching
             && let Some(last) = system.last_mut()
         {
@@ -426,8 +346,9 @@ impl ClaudeWorker {
         }
 
         for iteration in 0..max_iterations {
-            // Check for stop before making API call
-            self.check_stop()?;
+            if cancel.is_cancelled() {
+                return Ok(None);
+            }
 
             let request_body = MessagesRequest {
                 model: &self.config.claude_model,
@@ -458,28 +379,24 @@ impl ClaudeWorker {
                 response.stop_reason, response.content
             );
 
-            // Check if we need to handle tool use
             if response.stop_reason.as_ref() == "tool_use" {
-                // Try to get a strong reference to the executor
                 let Some(executor) = self.tool_executor.upgrade() else {
                     return Err(ClaudeError::ToolExecutorGone);
                 };
 
-                // Add assistant's response to messages
                 self.messages
                     .push(MessageContent::assistant(response.content.clone()));
 
-                // Execute each tool use and collect results
                 for block in &response.content {
                     if let ContentBlock::ToolUse { id, name, input } = block {
-                        // Check for stop before each tool use
-                        self.check_stop()?;
+                        if cancel.is_cancelled() {
+                            return Ok(None);
+                        }
 
                         info!("Claude tool use: {}({})", name, input);
                         let (result_text, is_error) = match executor.execute(name, input).await {
                             Ok(tool_result) => {
                                 info!("Tool result: {}", tool_result.text);
-                                // Collect any attachments from the tool result
                                 attachments.extend(tool_result.attachments);
                                 (tool_result.text, false)
                             }
@@ -496,7 +413,6 @@ impl ClaudeWorker {
                     }
                 }
 
-                // Continue the loop to get Claude's next response
                 info!("Tool use iteration {}, continuing...", iteration + 1);
                 continue;
             }
@@ -507,7 +423,7 @@ impl ClaudeWorker {
                 .into_iter()
                 .filter_map(|block| {
                     if let ContentBlock::Text { text, .. } = block {
-                        Some(text)
+                        Some(text.into_string())
                     } else {
                         None
                     }
@@ -516,33 +432,87 @@ impl ClaudeWorker {
                 .join("\n");
 
             info!("Claude final result: {}", text);
-            return Ok(AdminMessageResponse::new(text).with_attachments(attachments));
+            return Ok(Some(AssistantResponse::with_attachments(text, attachments)));
         }
 
         Err(ClaudeError::TooManyIterations(max_iterations))
     }
 }
 
+#[async_trait::async_trait]
+impl Assistant for ClaudeAssistant {
+    async fn record_message(&mut self, message: ChatMessage) {
+        let mc = message_to_content(message);
+        self.messages.push(mc);
+        self.maybe_compact().await;
+    }
+
+    async fn prompt(
+        &mut self,
+        message: ChatMessage,
+        cancel: CancellationToken,
+    ) -> Result<Option<AssistantResponse>, Box<dyn std::error::Error + Send + Sync>> {
+        let mc = message_to_content(message);
+        self.messages.push(mc);
+        self.maybe_compact().await;
+
+        if cancel.is_cancelled() {
+            return Ok(None);
+        }
+
+        Ok(self.handle_request(&cancel).await?)
+    }
+
+    async fn compact(&mut self) {
+        // Manual compaction always runs (is_automatic = false)
+        self.do_compact(false).await;
+    }
+
+    fn debug_log(&mut self) {
+        if self.summary.is_empty() {
+            info!("Claude summary: (empty)");
+        } else {
+            info!("Claude summary:\n{}", self.summary);
+        }
+        info!("Claude message buffer:\n{:#?}", self.messages);
+    }
+}
+
+/// Convert a ChatMessage to a MessageContent for the API.
+fn message_to_content(msg: ChatMessage) -> MessageContent {
+    let ts = msg.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ");
+    let text = match msg.sent_by.prefix() {
+        Some(prefix) => format!("[{}] {} {}", ts, prefix, msg.text),
+        None => format!("[{}] {}", ts, msg.text),
+    };
+    MessageContent {
+        role: msg.sent_by.api_role().into(),
+        content: vec![ContentBlock::Text { text: text.into() }],
+    }
+}
+
 /// Estimate the serialized size of a JSON Value without allocating.
 fn estimate_json_size(value: &Value) -> usize {
     match value {
-        Value::Null => 4,                        // "null"
-        Value::Bool(true) => 4,                  // "true"
-        Value::Bool(false) => 5,                 // "false"
-        Value::Number(n) => n.to_string().len(), // Numbers are small, ok to alloc
-        Value::String(s) => s.len() + 2,         // quotes
+        Value::Null => 4,
+        Value::Bool(true) => 4,
+        Value::Bool(false) => 5,
+        Value::Number(n) => n.to_string().len(),
+        Value::String(s) => s.len() + 2,
         Value::Array(arr) => {
             2 + arr.iter().map(estimate_json_size).sum::<usize>() + arr.len().saturating_sub(1)
         }
         Value::Object(obj) => {
             2 + obj
                 .iter()
-                .map(|(k, v)| k.len() + 3 + estimate_json_size(v)) // "key":value
+                .map(|(k, v)| k.len() + 3 + estimate_json_size(v))
                 .sum::<usize>()
-                + obj.len().saturating_sub(1) // commas
+                + obj.len().saturating_sub(1)
         }
     }
 }
+
+// ---- API Types ----
 
 /// Request body for the Claude Messages API.
 #[derive(Serialize)]

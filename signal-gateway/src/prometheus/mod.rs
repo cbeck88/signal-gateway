@@ -1,4 +1,4 @@
-use crate::claude::{Tool, ToolExecutor, ToolResult};
+use crate::assistant::{Tool, ToolExecutor, ToolResult};
 use async_trait::async_trait;
 use conf::Conf;
 use prometheus_http_client::{

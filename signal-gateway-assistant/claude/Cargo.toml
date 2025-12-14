@@ -1,0 +1,26 @@
+[package]
+name = "signal-gateway-assistant-claude"
+version = "0.1.0"
+edition.workspace = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["rustls-tls"]
+rustls-tls = ["reqwest/rustls-tls"]
+
+[dependencies]
+signal-gateway-assistant = { workspace = true }
+
+async-trait = { workspace = true }
+chrono = { workspace = true }
+conf = { workspace = true }
+conf-extra = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }

@@ -13,6 +13,7 @@ rustls-tls = ["prometheus-http-client/rustls-tls", "reqwest/rustls-tls"]
 
 [dependencies]
 prometheus-http-client = { workspace = true, default-features = false }
+signal-gateway-assistant = { workspace = true }
 
 async-trait = { workspace = true }
 chrono = { workspace = true }

@@ -7,7 +7,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-signal-gateway = { path = "../signal-gateway" }
+signal-gateway = { workspace = true }
 
 chrono = { workspace = true }
 conf = { workspace = true }

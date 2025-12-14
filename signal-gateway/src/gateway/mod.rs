@@ -4,7 +4,7 @@
 use crate::signal_jsonrpc::connect_ipc;
 use crate::{
     alertmanager::AlertPost,
-    claude::{ClaudeAgent, ClaudeConfig, SentBy, Tool, ToolExecutor, ToolResult},
+    assistant::{AssistantAgent, SentBy, Tool, ToolExecutor, ToolResult},
     log_message::{LogMessage, Origin},
     message_handler::{AdminMessage, AdminMessageResponse, Context, MessageHandlerResult},
     prometheus::{Prometheus, PrometheusConfig},
@@ -101,9 +101,6 @@ pub struct GatewayConfig {
     /// Log handler configuration for processing log messages.
     #[conf(flatten, prefix)]
     pub log_handler: LogHandlerConfig,
-    /// Claude API configuration for AI-powered responses.
-    #[conf(flatten, prefix)]
-    pub claude: Option<ClaudeConfig>,
 }
 
 /// Wrapper for parsing gateway commands
@@ -255,12 +252,15 @@ pub struct Gateway {
     log_handler: LogHandler,
     /// Command router for dispatching admin messages.
     command_router: CommandRouter,
-    /// Claude API client for AI-powered responses.
-    /// Initialized after Arc creation so it can hold a weak reference back to Gateway.
-    claude: OnceLock<Box<ClaudeAgent>>,
+    /// Assistant agent for AI-powered responses.
+    assistant: OnceLock<AssistantAgent>,
     /// Additional tool executors added via the builder.
     extra_tool_executors: Vec<Arc<dyn ToolExecutor>>,
 }
+
+/// Type alias for the assistant factory function.
+pub type AssistantFactory =
+    Box<dyn FnOnce(Weak<dyn ToolExecutor>) -> Box<dyn crate::assistant::Assistant> + Send>;
 
 /// Builder for creating a [`Gateway`] with optional additional tool executors.
 pub struct GatewayBuilder {
@@ -268,6 +268,7 @@ pub struct GatewayBuilder {
     token: Option<CancellationToken>,
     command_router: Option<CommandRouter>,
     extra_tool_executors: Vec<Arc<dyn ToolExecutor>>,
+    assistant_factory: Option<AssistantFactory>,
 }
 
 impl GatewayBuilder {
@@ -278,6 +279,7 @@ impl GatewayBuilder {
             token: None,
             command_router: None,
             extra_tool_executors: Vec::new(),
+            assistant_factory: None,
         }
     }
 
@@ -295,10 +297,22 @@ impl GatewayBuilder {
 
     /// Add an additional tool executor to the gateway.
     ///
-    /// Tools from these executors will be available to Claude alongside
+    /// Tools from these executors will be available to the assistant alongside
     /// the built-in tools (log handler, prometheus, etc.).
     pub fn with_tools(mut self, executor: Arc<dyn ToolExecutor>) -> Self {
         self.extra_tool_executors.push(executor);
+        self
+    }
+
+    /// Set the assistant factory for AI-powered responses.
+    ///
+    /// The factory receives a weak reference to the gateway (as a ToolExecutor)
+    /// and returns the assistant implementation.
+    pub fn with_assistant<F>(mut self, factory: F) -> Self
+    where
+        F: FnOnce(Weak<dyn ToolExecutor>) -> Box<dyn crate::assistant::Assistant> + Send + 'static,
+    {
+        self.assistant_factory = Some(Box::new(factory));
         self
     }
 
@@ -309,6 +323,7 @@ impl GatewayBuilder {
             self.token.unwrap_or_default(),
             self.command_router.unwrap_or_default(),
             self.extra_tool_executors,
+            self.assistant_factory,
         )
         .await
     }
@@ -326,6 +341,7 @@ impl Gateway {
         token: CancellationToken,
         command_router: CommandRouter,
         extra_tool_executors: Vec<Arc<dyn ToolExecutor>>,
+        assistant_factory: Option<AssistantFactory>,
     ) -> Arc<Self> {
         let (signal_alert_mq_tx, signal_alert_mq_rx) = unbounded_channel();
 
@@ -338,8 +354,6 @@ impl Gateway {
 
         let log_handler = LogHandler::new(config.log_handler.clone(), signal_alert_mq_tx.clone());
 
-        let claude_config = config.claude.clone();
-
         let gateway = Arc::new(Self {
             config,
             signal_alert_mq_tx,
@@ -348,18 +362,18 @@ impl Gateway {
             prometheus,
             log_handler,
             command_router,
-            claude: OnceLock::new(),
+            assistant: OnceLock::new(),
             extra_tool_executors,
         });
 
-        // Initialize Claude with a weak reference back to the gateway
-        if let Some(cc) = claude_config {
-            let claude = ClaudeAgent::new(cc, Arc::downgrade(&gateway) as Weak<dyn ToolExecutor>)
-                .expect("Invalid claude config");
+        // Initialize the assistant agent using the factory if one was provided
+        if let Some(factory) = assistant_factory {
+            let assistant = factory(Arc::downgrade(&gateway) as Weak<dyn ToolExecutor>);
+            let agent = AssistantAgent::new(assistant);
             gateway
-                .claude
-                .set(Box::new(claude))
-                .unwrap_or_else(|_| panic!("claude OnceLock was already set"));
+                .assistant
+                .set(agent)
+                .unwrap_or_else(|_| panic!("assistant OnceLock was already set"));
         }
 
         gateway
@@ -475,8 +489,8 @@ impl Gateway {
                             attachments,
                         }.send(signal_cli).await?;
 
-                        if let Some(claude) = self.claude.get() {
-                            claude.record_message(SentBy::System, &message, Utc::now().timestamp_millis() as u64);
+                        if let Some(assistant) = self.assistant.get() {
+                            assistant.record_message(SentBy::System, &message, Utc::now().timestamp_millis() as u64);
                         }
                     } else {
                         warn!("alert_rx is closed, halting service");
@@ -549,8 +563,8 @@ impl Gateway {
                                 attachments,
                             }.send(signal_cli).await?;
 
-                            if let Some(claude) = self.claude.get() {
-                                claude.record_message(sourced.source, &sourced.resp.text, Utc::now().timestamp_millis() as u64);
+                            if let Some(assistant) = self.assistant.get() {
+                                assistant.record_message(sourced.source, &sourced.resp.text, Utc::now().timestamp_millis() as u64);
                             }
                         }
                     }
@@ -570,8 +584,8 @@ impl Gateway {
         match handling {
             Handling::Help => {
                 // Record as system command
-                if let Some(claude) = self.claude.get() {
-                    claude.record_message(SentBy::UserToSystem, &data.message, data.timestamp);
+                if let Some(assistant) = self.assistant.get() {
+                    assistant.record_message(SentBy::UserToSystem, &data.message, data.timestamp);
                 }
                 Some(Ok(SourcedAdminMessageResponse {
                     resp: AdminMessageResponse::new(self.command_router.help()),
@@ -585,9 +599,9 @@ impl Gateway {
                     Err(err) => return Some(Err((400u16, err.into()))),
                 };
 
-                // Record this as a system command in Claude's history
-                if let Some(claude) = self.claude.get() {
-                    claude.record_message(SentBy::UserToSystem, &data.message, data.timestamp);
+                // Record this as a system command in the assistant's history
+                if let Some(assistant) = self.assistant.get() {
+                    assistant.record_message(SentBy::UserToSystem, &data.message, data.timestamp);
                 }
 
                 let resp = match self.handle_gateway_command(cmd).await {
@@ -600,23 +614,23 @@ impl Gateway {
                 }))
             }
             Handling::Claude => {
-                // Send directly to Claude (use stripped message)
-                let Some(claude) = self.claude.get() else {
-                    return Some(Err((501u16, "Claude is not configured".into())));
+                // Send directly to the assistant (use stripped message)
+                let Some(assistant) = self.assistant.get() else {
+                    return Some(Err((501u16, "Assistant is not configured".into())));
                 };
 
-                match claude.request(stripped_message, data.timestamp).await {
+                match assistant.request(stripped_message, data.timestamp).await {
                     Ok(resp) => Some(Ok(SourcedAdminMessageResponse {
                         resp,
-                        source: SentBy::Claude,
+                        source: SentBy::Assistant,
                     })),
                     Err(err) => Some(Err((500, err.to_string().into()))),
                 }
             }
             Handling::Custom(handler) => {
                 // Record as system message
-                if let Some(claude) = self.claude.get() {
-                    claude.record_message(SentBy::UserToSystem, &data.message, data.timestamp);
+                if let Some(assistant) = self.assistant.get() {
+                    assistant.record_message(SentBy::UserToSystem, &data.message, data.timestamp);
                 }
 
                 // Pass stripped message to custom handler
@@ -843,30 +857,30 @@ impl Gateway {
                 }
             }
             GatewayCommand::ClaudeStop => {
-                let claude = self
-                    .claude
+                let assistant = self
+                    .assistant
                     .get()
-                    .ok_or_else(|| (501u16, "claude was not configured".into()))?;
+                    .ok_or_else(|| (501u16, "assistant was not configured".into()))?;
 
-                claude.request_stop();
+                assistant.request_stop();
                 Ok(AdminMessageResponse::new("stop requested"))
             }
             GatewayCommand::ClaudeCompact => {
-                let claude = self
-                    .claude
+                let assistant = self
+                    .assistant
                     .get()
-                    .ok_or_else(|| (501u16, "claude was not configured".into()))?;
+                    .ok_or_else(|| (501u16, "assistant was not configured".into()))?;
 
-                claude.request_compaction();
+                assistant.request_compaction();
                 Ok(AdminMessageResponse::new("compaction requested"))
             }
             GatewayCommand::ClaudeDebug => {
-                let claude = self
-                    .claude
+                let assistant = self
+                    .assistant
                     .get()
-                    .ok_or_else(|| (501u16, "claude was not configured".into()))?;
+                    .ok_or_else(|| (501u16, "assistant was not configured".into()))?;
 
-                claude.request_debug();
+                assistant.request_debug();
                 Ok(AdminMessageResponse::new("debug logged"))
             }
         }

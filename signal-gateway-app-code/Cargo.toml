@@ -7,7 +7,7 @@ edition.workspace = true
 workspace = true
 
 [dependencies]
-signal-gateway = { path = "../signal-gateway", default-features = false }
+signal-gateway-assistant = { workspace = true }
 
 async-trait = { workspace = true }
 flate2 = { workspace = true }

@@ -7,6 +7,7 @@ use hyper::service::service_fn;
 use hyper_util::{rt::TokioIo, server::conn::auto};
 use signal_gateway::{CommandRouter, Gateway, GatewayConfig, Handling};
 use signal_gateway_app_code::AppCodeTools;
+use signal_gateway_assistant_claude::{ClaudeAssistant, ClaudeConfig};
 use std::{env, fs, net::SocketAddr, path::PathBuf, sync::Arc, time::Duration};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -46,6 +47,9 @@ pub struct Config {
     /// Application source code configurations for Claude tools.
     #[conf(long, env, value_parser = serde_json::from_str, default, default_help_str = "[]")]
     app_code: Vec<AppCodeConfigExt>,
+    /// Claude API configuration for AI-powered responses.
+    #[conf(flatten, prefix)]
+    claude: Option<ClaudeConfig>,
     #[conf(flatten, serde(flatten))]
     gateway: GatewayConfig,
 }
@@ -121,7 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     router_builder = router_builder.route("/", Handling::GatewayCommand);
 
     // Add Claude as default handler if configured
-    if config.gateway.claude.is_some() {
+    if config.claude.is_some() {
         router_builder = router_builder.route("", Handling::Claude);
     }
 
@@ -151,6 +155,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if let Some(tools) = app_code_tools {
         gateway_builder = gateway_builder.with_tools(tools);
+    }
+
+    // Add Claude assistant if configured
+    if let Some(claude_config) = config.claude {
+        gateway_builder = gateway_builder.with_assistant(move |tool_executor| {
+            Box::new(
+                ClaudeAssistant::new(claude_config, tool_executor)
+                    .expect("Failed to initialize Claude assistant"),
+            )
+        });
     }
 
     let gateway = gateway_builder.build().await;

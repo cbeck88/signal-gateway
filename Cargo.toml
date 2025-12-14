@@ -4,6 +4,8 @@ members = [
     "prometheus-http-client",
     "signal-gateway",
     "signal-gateway-app-code",
+    "signal-gateway-assistant",
+    "signal-gateway-assistant/claude",
     "signal-gateway-bin",
     "signal-gateway-log-ingest",
 ]
@@ -25,6 +27,9 @@ result_large_err = "allow"
 
 [workspace.dependencies]
 prometheus-http-client = { path = "prometheus-http-client", default-features = false }
+signal-gateway = { path = "signal-gateway", default-features = false }
+signal-gateway-assistant = { path = "signal-gateway-assistant" }
+signal-gateway-assistant-claude = { path = "signal-gateway-assistant/claude" }
 
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }

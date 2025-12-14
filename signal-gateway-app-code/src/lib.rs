@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use flate2::read::GzDecoder;
 use regex::Regex;
 use serde::Deserialize;
-use signal_gateway::claude::{Tool, ToolExecutor, ToolResult};
+use signal_gateway_assistant::{Tool, ToolExecutor, ToolResult};
 use std::{
     collections::HashMap, error::Error, fmt::Write, future::Future, io::Read, path::PathBuf,
     pin::Pin, str::FromStr, sync::Arc,

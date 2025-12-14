@@ -4,7 +4,7 @@ use super::{
     route::{Destination, Limit, Route},
 };
 use crate::{
-    claude::{Tool, ToolExecutor, ToolResult},
+    assistant::{Tool, ToolExecutor, ToolResult},
     concurrent_map::LazyMap,
     log_format::LogFormatConfig,
     log_message::{LogFilter, LogMessage, Origin},

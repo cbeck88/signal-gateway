@@ -1735,6 +1735,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "signal-gateway-assistant",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -1753,9 +1754,38 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "signal-gateway",
+ "signal-gateway-assistant",
  "tar",
  "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "signal-gateway-assistant"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "tokio-util",
+]
+
+[[package]]
+name = "signal-gateway-assistant-claude"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "conf",
+ "conf-extra",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "signal-gateway-assistant",
+ "thiserror",
+ "tokio",
+ "tokio-util",
  "tracing",
 ]
 
@@ -1774,6 +1804,7 @@ dependencies = [
  "serde_json",
  "signal-gateway",
  "signal-gateway-app-code",
+ "signal-gateway-assistant-claude",
  "signal-gateway-log-ingest",
  "tokio",
  "tokio-util",
