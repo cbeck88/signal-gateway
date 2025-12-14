@@ -358,15 +358,17 @@ impl ClaudeAssistant {
                 tools: tools.clone(),
             };
 
-            let response = self
-                .client
-                .post(&self.config.claude_api_url)
-                .header("x-api-key", &self.api_key)
-                .header("anthropic-version", ANTHROPIC_API_VERSION)
-                .header("content-type", "application/json")
-                .json(&request_body)
-                .send()
-                .await?;
+            let response = tokio::select! {
+                result = self
+                    .client
+                    .post(&self.config.claude_api_url)
+                    .header("x-api-key", &self.api_key)
+                    .header("anthropic-version", ANTHROPIC_API_VERSION)
+                    .header("content-type", "application/json")
+                    .json(&request_body)
+                    .send() => result?,
+                _ = cancel.cancelled() => return Ok(None),
+            };
 
             if !response.status().is_success() {
                 let error: ErrorResponse = response.json().await?;
@@ -394,7 +396,11 @@ impl ClaudeAssistant {
                         }
 
                         info!("Claude tool use: {}({})", name, input);
-                        let (result_text, is_error) = match executor.execute(name, input).await {
+                        let tool_result = tokio::select! {
+                            result = executor.execute(name, input) => result,
+                            _ = cancel.cancelled() => return Ok(None),
+                        };
+                        let (result_text, is_error) = match tool_result {
                             Ok(tool_result) => {
                                 info!("Tool result: {}", tool_result.text);
                                 attachments.extend(tool_result.attachments);
