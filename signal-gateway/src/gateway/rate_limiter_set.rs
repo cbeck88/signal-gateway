@@ -36,7 +36,7 @@ impl LimiterSet {
         global_limiters: Vec<(LogFilter, Limiter)>,
     ) -> Self {
         Self {
-            limiters: LazyMap::new(make_limiters),
+            limiters: LazyMap::new(move |_key| make_limiters()),
             global_limiters,
         }
     }

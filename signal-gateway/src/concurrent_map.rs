@@ -11,6 +11,12 @@
 //! sources, and insertions occur only a few times at the beginning of the process.
 //! Then almost all accesses are to existing elements, and from that point on,
 //! only read locks are taken when using this API.
+//!
+//! The API also allows to call "retain" if the map gets too big and it needs
+//! to be pruned in some manner.
+//!
+//! This is used instead of dash_map and once_map to avoid unnecessary complexity
+//! and dependencies, and give exactly the API needed in our application.
 
 use std::{borrow::Borrow, collections::HashMap, hash::Hash, sync::RwLock};
 
@@ -98,7 +104,7 @@ impl <K, V> Default for ConcurrentMap<K, V>
 /// to pass the creation function on every access.
 pub struct LazyMap<K, V> {
     inner: ConcurrentMap<K, V>,
-    factory: Box<dyn Fn() -> V + Send + Sync>,
+    factory: Box<dyn Fn(&K) -> V + Send + Sync>,
 }
 
 impl<K, V> LazyMap<K, V>
@@ -106,7 +112,7 @@ where
     K: Eq + Hash + Clone,
 {
     /// Create a new lazy map with the given factory for creating initial values.
-    pub fn new(factory: impl Fn() -> V + Send + Sync + 'static) -> Self {
+    pub fn new(factory: impl Fn(&K) -> V + Send + Sync + 'static) -> Self {
         Self {
             inner: ConcurrentMap::new(),
             factory: Box::new(factory),
@@ -119,7 +125,8 @@ where
         Q: Borrow<K>,
         A: FnOnce(&V) -> R,
     {
-        self.inner.get_or_insert_with(key, &self.factory, access)
+        let key = key.borrow();
+        self.inner.get_or_insert_with(key, || (self.factory)(key), access)
     }
 
     /// Access all entries in the map with a read lock.

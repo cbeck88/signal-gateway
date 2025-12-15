@@ -178,7 +178,7 @@ pub struct SourceLocationRateLimiter {
 impl SourceLocationRateLimiter {
     pub fn new(threshold: RateThreshold, max_entries: usize) -> Self {
         Self {
-            limiters: LazyMap::new(move || MultiRateLimiter::from(threshold)),
+            limiters: LazyMap::new(move |_key| MultiRateLimiter::from(threshold)),
             threshold,
             max_entries,
         }

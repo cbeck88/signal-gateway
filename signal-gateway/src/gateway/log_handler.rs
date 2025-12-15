@@ -115,7 +115,7 @@ impl LogHandler {
         Self {
             config,
             signal_alert_mq_tx,
-            log_buffers: LazyMap::new(move || LogBuffer::new(buffer_size)),
+            log_buffers: LazyMap::new(move |_key| LogBuffer::new(buffer_size)),
             routes,
             overall_limits,
         }
