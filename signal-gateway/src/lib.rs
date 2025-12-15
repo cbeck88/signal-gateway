@@ -1,7 +1,8 @@
 //! Signal Gateway library for bridging alertmanager and logging with Signal messenger.
 //!
 //! This crate provides the core functionality for receiving alerts and log messages
-//! and forwarding them to Signal messenger via signal-cli.
+//! and forwarding them to Signal messenger via signal-cli, as well as chatting back,
+//! interrogating the system, generating plots, or issuing other commands.
 
 #![deny(missing_docs)]
 
