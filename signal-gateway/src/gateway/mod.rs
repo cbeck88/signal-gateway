@@ -16,9 +16,6 @@ use async_trait::async_trait;
 use chrono::Utc;
 use conf::{Conf, Subcommands};
 use futures_util::FutureExt;
-use http::{Method, Request, Response, StatusCode};
-use http_body::Body;
-use http_body_util::BodyExt;
 use prometheus_http_client::{AlertStatus, ExtractLabels};
 use std::{
     fmt::Write,
@@ -31,7 +28,7 @@ use tokio::{
     join,
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
 };
-use tokio_util::{bytes::Buf, sync::CancellationToken};
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 
 mod signal_trust_set;
@@ -655,68 +652,6 @@ impl Gateway {
         }
     }
 
-    /// Handle an incoming HTTP request (e.g., webhooks from Alertmanager).
-    pub async fn handle_http_request<B>(&self, req: Request<B>) -> Result<Response<String>, String>
-    where
-        B: Body + Send,
-        B::Data: Buf + Send,
-        B::Error: std::fmt::Display,
-    {
-        info!(
-            "Received http request: {} {} (version: {:?})",
-            req.method(),
-            req.uri().path(),
-            req.version()
-        );
-
-        fn ok_resp() -> Response<String> {
-            Response::new("OK".into())
-        }
-        fn err_resp(code: StatusCode, text: impl Into<String>) -> Response<String> {
-            let mut resp = Response::new(text.into());
-            *resp.status_mut() = code;
-            resp
-        }
-
-        match req.uri().path() {
-            "/" | "/health" | "/ready" => {
-                if !matches!(req.method(), &Method::GET | &Method::HEAD) {
-                    Ok(err_resp(
-                        StatusCode::NOT_IMPLEMENTED,
-                        "Use GET or HEAD with this route",
-                    ))
-                } else {
-                    Ok(ok_resp())
-                }
-            }
-            "/alert" => {
-                if !matches!(req.method(), &Method::POST) {
-                    return Ok(err_resp(
-                        StatusCode::NOT_IMPLEMENTED,
-                        "Use POST with this route",
-                    ));
-                }
-                let v = req
-                    .into_body()
-                    .collect()
-                    .await
-                    .map_err(|err| format!("When reading body bytes: {err}"))?
-                    .to_bytes()
-                    .to_vec();
-
-                if let Err((code, msg)) = self.handle_post_alert(&v).await {
-                    Ok(err_resp(code, msg))
-                } else {
-                    Ok(ok_resp())
-                }
-            }
-            _ => Ok(err_resp(
-                StatusCode::NOT_FOUND,
-                format!("Not found '{} {}'", req.method(), req.uri().path()),
-            )),
-        }
-    }
-
     async fn handle_gateway_command(&self, cmd: GatewayCommand) -> MessageHandlerResult {
         match cmd {
             GatewayCommand::Log { filter } => {
@@ -887,17 +822,8 @@ impl Gateway {
         }
     }
 
-    async fn handle_post_alert(&self, body_bytes: &[u8]) -> Result<(), (StatusCode, &'static str)> {
-        let body_text = str::from_utf8(body_bytes).map_err(|err| {
-            warn!("When reading body bytes: {err}");
-            (StatusCode::BAD_REQUEST, "Request body was not utf-8")
-        })?;
-
-        let alert_msg: AlertPost = serde_json::from_str(body_text).map_err(|err| {
-            error!("Could not parse json: {err}:\n{body_text}");
-            (StatusCode::BAD_REQUEST, "Invalid Json")
-        })?;
-
+    /// Handle a POST body from alertmanager
+    pub async fn handle_alertmanager_post(&self, alert_msg: AlertPost) -> Result<(), &'static str> {
         let text = self
             .format_alert_text(&alert_msg)
             .unwrap_or_else(|err| format!("error formatting alert text: {err}:\n{alert_msg:#?}"));
@@ -921,20 +847,16 @@ impl Gateway {
         }
 
         // Build summary: status sigils followed by alert names
-        let summary = alert_msg
-            .alerts
-            .iter()
-            .map(|alert| {
-                let symbol = alert.status.symbol();
-                let name = alert
-                    .labels
-                    .get("alertname")
-                    .map(|s| s.as_str())
-                    .unwrap_or("?");
-                format!("{symbol}{name}")
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+        let mut summary = String::with_capacity(32);
+        alert_msg.alerts.iter().for_each(|alert| {
+            let symbol = alert.status.symbol();
+            let name = alert
+                .labels
+                .get("alertname")
+                .map(|s| s.as_str())
+                .unwrap_or("?");
+            write!(&mut summary, "{symbol}{name} ").unwrap();
+        });
 
         self.signal_alert_mq_tx
             .send(SignalAlertMessage {
@@ -944,13 +866,7 @@ impl Gateway {
                 summary: Summary::Owned(summary.into()),
                 destination_override: None,
             })
-            .map_err(|_err| {
-                error!("Could not send alert message, queue is closed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Can't send signal msg right now, queue is closed",
-                )
-            })
+            .map_err(|_err| "Can't send signal msg right now, queue is closed")
     }
 
     fn format_alert_text(&self, msg: &AlertPost) -> Result<String, String> {

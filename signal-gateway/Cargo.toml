@@ -21,9 +21,6 @@ conf = { workspace = true }
 conf-extra = { workspace = true }
 displaydoc = { workspace = true }
 futures-util = { workspace = true }
-http = { workspace = true }
-http-body = { workspace = true }
-http-body-util = { workspace = true }
 humantime = { workspace = true }
 jsonrpsee = { workspace = true }
 regex = { workspace = true }
