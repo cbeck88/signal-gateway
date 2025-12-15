@@ -1,6 +1,6 @@
 //! Rate limiting for log alerts.
 
-use crate::{concurrent_map::LazyMap, log_message::LogMessage};
+use crate::{concurrent_map::LazyMap, lazy_map_cleaner::{LazyMapCleaner, TsSecs}, log_message::LogMessage};
 use serde::Deserialize;
 use std::{
     str::FromStr,
@@ -163,18 +163,15 @@ impl SimpleRateLimiter {
 pub struct SourceLocationRateLimiter {
     /// Maps (file, line) -> rate limiter for that location
     limiters: LazyMap<(Box<str>, Box<str>), MultiRateLimiter>,
-    /// Threshold for creating new limiters (used for cleanup window calculation)
-    threshold: RateThreshold,
-    /// Maximum entries before triggering cleanup
-    last_cleanup_size: Mutex<usize>,
+    /// Manages cleanup of the lazy map
+    lazy_map_cleaner: LazyMapCleaner,
 }
 
 impl SourceLocationRateLimiter {
     pub fn new(threshold: RateThreshold) -> Self {
         Self {
-            limiters: LazyMap::with_capacity(16, move |_key| MultiRateLimiter::from(threshold)),
-            threshold,
-            last_cleanup_size: Mutex::new(8),
+            limiters: LazyMap::with_capacity(8, move |_key| MultiRateLimiter::from(threshold)),
+            lazy_map_cleaner: LazyMapCleaner::new(threshold.duration.as_secs() as i64),
         }
     }
 
@@ -189,26 +186,10 @@ impl SourceLocationRateLimiter {
 
         let result = self.limiters.get(&key, |limiter| limiter.evaluate(ts_sec));
 
-        // Opportunistically check for cleanup, but not if someone else is cleaning up
-        if let Ok(mut lk) = self.last_cleanup_size.try_lock() {
-            // If we're twice as large as the ending count from the last time we
-            // cleaned up, then let's try to clean up again.
-            if self.limiters.len() >= 2 * *lk {
-                *lk = self.cleanup(ts_sec);
-            }
-        }
+        // Maybe prune the lazy map
+        self.lazy_map_cleaner.maybe_clean(ts_sec, &self.limiters);
 
         result
-    }
-
-    /// Remove entries where all timestamps are older than the window
-    fn cleanup(&self, now: i64) -> usize {
-        let window = self.threshold.duration.as_secs() as i64;
-        let cutoff = now - window;
-        self.limiters.retain(|_, limiter| {
-            // Keep if any timestamp is recent enough
-            limiter.get_latest() > cutoff
-        })
     }
 }
 
@@ -255,6 +236,12 @@ impl MultiRateLimiter {
             // Suppression: alert when rate < threshold
             !threshold_met
         }
+    }
+}
+
+impl TsSecs for MultiRateLimiter {
+    fn ts_secs(&self) -> i64 {
+        self.get_latest()
     }
 }
 

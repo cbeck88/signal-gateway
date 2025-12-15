@@ -12,6 +12,7 @@ pub mod message_handler;
 
 pub(crate) mod circular_buffer;
 pub(crate) mod concurrent_map;
+pub(crate) mod lazy_map_cleaner;
 pub(crate) mod limiter_sequence;
 pub(crate) mod log_format;
 pub(crate) mod log_message;
