@@ -343,6 +343,7 @@ impl Gateway {
         extra_tool_executors: Vec<Arc<dyn ToolExecutor>>,
         assistant_factory: Option<AssistantFactory>,
     ) -> Arc<Self> {
+        let child_token = token.child_token();
         let (signal_alert_mq_tx, signal_alert_mq_rx) = unbounded_channel();
 
         let prometheus = config
@@ -369,7 +370,7 @@ impl Gateway {
         // Initialize the assistant agent using the factory if one was provided
         if let Some(factory) = assistant_factory {
             let assistant = factory(Arc::downgrade(&gateway) as Weak<dyn ToolExecutor>);
-            let agent = AssistantAgent::new(assistant);
+            let agent = AssistantAgent::new(assistant, child_token);
             gateway
                 .assistant
                 .set(agent)

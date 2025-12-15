@@ -54,10 +54,9 @@ impl AssistantAgent {
     /// Create a new assistant agent with the given assistant implementation.
     ///
     /// Spawns a background worker task that processes requests serially.
-    pub fn new(assistant: Box<dyn Assistant>) -> Self {
+    pub fn new(assistant: Box<dyn Assistant>, cancellation_token: CancellationToken) -> Self {
         let (input_tx, input_rx) = mpsc::channel(REQUEST_QUEUE_SIZE);
         let (stop_tx, stop_rx) = mpsc::channel(REQUEST_QUEUE_SIZE);
-        let cancellation_token = CancellationToken::new();
 
         let worker = AssistantWorker::new(assistant, input_rx, stop_rx, cancellation_token.clone());
 
