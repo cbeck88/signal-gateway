@@ -2,7 +2,7 @@
 //!
 //! Wraps a circular buffer with a synchronous mutex for fast, blocking access.
 
-use crate::{circular_buffer::CircularBuffer, log_message::LogMessage};
+use crate::{circular_buffer::CircularBuffer, lazy_map_cleaner::TsSecs, log_message::LogMessage};
 use std::sync::Mutex;
 
 /// A thread-safe circular buffer for log messages.
@@ -57,5 +57,18 @@ impl LogBuffer {
         let buf = self.buf.lock().unwrap();
         let mut iter = buf.iter().rev();
         f(&mut iter)
+    }
+
+    /// Access the back of the buffer, if it exists. Returns None if not.
+    pub fn peek_back<R>(&self, f: impl FnOnce(&LogMessage) -> R) -> Option<R> {
+        let buf = self.buf.lock().unwrap();
+        Some(f(buf.back()?))
+    }
+}
+
+impl TsSecs for LogBuffer {
+    fn ts_secs(&self) -> i64 {
+        self.peek_back(|log| log.get_timestamp_or_fallback())
+            .unwrap_or(0)
     }
 }

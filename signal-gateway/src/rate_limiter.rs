@@ -1,6 +1,10 @@
 //! Rate limiting for log alerts.
 
-use crate::{concurrent_map::LazyMap, lazy_map_cleaner::{LazyMapCleaner, TsSecs}, log_message::LogMessage};
+use crate::{
+    concurrent_map::LazyMap,
+    lazy_map_cleaner::{LazyMapCleaner, TsSecs},
+    log_message::LogMessage,
+};
 use serde::Deserialize;
 use std::{
     str::FromStr,
@@ -127,6 +131,15 @@ impl Limiter {
     }
 }
 
+impl TsSecs for Limiter {
+    fn ts_secs(&self) -> i64 {
+        match self {
+            Self::Multi(m) => m.get_latest(),
+            Self::SourceLocation(s) => s.get_latest(),
+        }
+    }
+}
+
 /// A rate limiter containing a single counter, and a minimum time window for the next event to pass
 #[allow(dead_code)]
 #[derive(Debug, Default)]
@@ -165,6 +178,8 @@ pub struct SourceLocationRateLimiter {
     limiters: LazyMap<(Box<str>, Box<str>), MultiRateLimiter>,
     /// Manages cleanup of the lazy map
     lazy_map_cleaner: LazyMapCleaner,
+    /// Max evaluated timestamp
+    latest_ts_sec: AtomicI64,
 }
 
 impl SourceLocationRateLimiter {
@@ -172,6 +187,7 @@ impl SourceLocationRateLimiter {
         Self {
             limiters: LazyMap::with_capacity(8, move |_key| MultiRateLimiter::from(threshold)),
             lazy_map_cleaner: LazyMapCleaner::new(threshold.duration.as_secs() as i64),
+            latest_ts_sec: Default::default(),
         }
     }
 
@@ -184,12 +200,18 @@ impl SourceLocationRateLimiter {
             line.to_owned().into_boxed_str(),
         );
 
+        self.latest_ts_sec.fetch_max(ts_sec, Ordering::SeqCst);
+
         let result = self.limiters.get(&key, |limiter| limiter.evaluate(ts_sec));
 
         // Maybe prune the lazy map
         self.lazy_map_cleaner.maybe_clean(ts_sec, &self.limiters);
 
         result
+    }
+
+    pub fn get_latest(&self) -> i64 {
+        self.latest_ts_sec.load(Ordering::SeqCst)
     }
 }
 

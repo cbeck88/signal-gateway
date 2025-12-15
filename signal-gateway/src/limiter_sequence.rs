@@ -4,6 +4,7 @@
 //! and the first one to do so is returned.
 
 use crate::{
+    lazy_map_cleaner::TsSecs,
     log_message::{LogFilter, LogMessage},
     rate_limiter::{Limiter, RateThreshold},
 };
@@ -62,6 +63,12 @@ impl LimiterSequence {
             None => Ok(()),
             Some(i) => Err(i),
         }
+    }
+}
+
+impl TsSecs for LimiterSequence {
+    fn ts_secs(&self) -> i64 {
+        self.0.iter().map(|(_f, l)| l.ts_secs()).max().unwrap_or(0)
     }
 }
 

@@ -6,6 +6,7 @@ use super::{
 use crate::{
     assistant::{Tool, ToolExecutor, ToolResult},
     concurrent_map::LazyMap,
+    lazy_map_cleaner::LazyMapCleaner,
     limiter_sequence::{Limit, LimiterSequence},
     log_format::LogFormatConfig,
     log_message::{LogMessage, Origin},
@@ -13,7 +14,7 @@ use crate::{
 use async_trait::async_trait;
 use chrono::Utc;
 use conf::Conf;
-use std::fmt;
+use std::{fmt, time::Duration};
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::{error, info};
 
@@ -57,6 +58,9 @@ pub struct LogHandlerConfig {
     /// Number of recent log messages to buffer per origin
     #[conf(long, env, default_value = "64")]
     pub log_buffer_size: usize,
+    /// Max age of an origin, after this we remove it to reclaim memory
+    #[conf(long, env, value_parser = conf_extra::parse_duration, default_value = "3d")]
+    pub max_origin_age: Duration,
     /// Debug logging level for suppressed messages.
     /// 0 = no logging, 1 = log only overall limiter, 2 = log routes + overall, 3 = log all.
     #[conf(long, env, default_value = "0")]
@@ -86,6 +90,8 @@ pub struct LogHandler {
     signal_alert_mq_tx: UnboundedSender<SignalAlertMessage>,
     /// Log buffers keyed by origin (app + host). Lazily created.
     log_buffers: LazyMap<Origin, LogBuffer>,
+    /// Clean up log buffers as origins get old
+    lazy_map_cleaner: LazyMapCleaner,
     /// Routes with their associated limiter sets.
     routes: Vec<(Route, LimiterSet)>,
     /// Overall rate limiters applied after route checks pass.
@@ -101,17 +107,19 @@ impl LogHandler {
         let routes = config
             .routes
             .iter()
-            .map(|route| (route.clone(), route.make_limiter_set()))
+            .map(|route| (route.clone(), route.make_limiter_set(config.max_origin_age)))
             .collect();
 
         let overall_limits = config.overall_limits.iter().collect();
 
         let buffer_size = config.log_buffer_size;
+        let max_age = config.max_origin_age.as_secs() as i64;
 
         Self {
             config,
             signal_alert_mq_tx,
             log_buffers: LazyMap::new(move |_key| LogBuffer::new(buffer_size)),
+            lazy_map_cleaner: LazyMapCleaner::new(max_age),
             routes,
             overall_limits,
         }
@@ -175,6 +183,8 @@ impl LogHandler {
             }
         }
 
+        let now = Utc::now();
+
         // Get or create the buffer for this origin, then record the message
         let formatted_text = self.log_buffers.get(&origin, |buffer| {
             if rate_limit_result.is_err() {
@@ -186,7 +196,6 @@ impl LogHandler {
                 let mut text = String::with_capacity(4096);
                 let mut first_msg_len = 0;
                 let mut is_first = true;
-                let now = Utc::now();
 
                 buffer.push_back_and_drain(log_msg, |log_msg| {
                     self.config
@@ -218,6 +227,10 @@ impl LogHandler {
                 );
             }
         }
+
+        // Maybe cleanup old log buffers
+        self.lazy_map_cleaner
+            .maybe_clean(now.timestamp_millis(), &self.log_buffers);
     }
 
     /// Check if a log message passes all rate limiters.

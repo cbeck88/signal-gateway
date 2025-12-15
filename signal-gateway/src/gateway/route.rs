@@ -9,6 +9,7 @@ use crate::{
     log_message::{Level, LogFilter},
 };
 use serde::Deserialize;
+use std::time::Duration;
 
 /// A route configuration for processing log messages.
 ///
@@ -51,10 +52,14 @@ fn default_alert_level() -> Level {
 
 impl Route {
     /// Create a limiter set from this route's limit configurations.
-    pub fn make_limiter_set(&self) -> LimiterSet {
+    pub fn make_limiter_set(&self, max_origin_age: Duration) -> LimiterSet {
         let limits = self.limits.clone();
         let global_limiters = self.global_limits.iter().collect();
-        LimiterSet::new(move || limits.iter().collect(), global_limiters)
+        LimiterSet::new(
+            move || limits.iter().collect(),
+            global_limiters,
+            max_origin_age,
+        )
     }
 }
 

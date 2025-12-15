@@ -38,6 +38,11 @@ impl<T> CircularBuffer<T> {
         self.buf.push_back(value);
     }
 
+    /// Returns the back element of the buffer
+    pub fn back(&self) -> Option<&T> {
+        self.buf.back()
+    }
+
     /// Returns the number of elements in the buffer.
     #[allow(unused)]
     pub fn len(&self) -> usize {

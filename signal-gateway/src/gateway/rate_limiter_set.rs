@@ -2,9 +2,11 @@
 
 use crate::{
     concurrent_map::LazyMap,
+    lazy_map_cleaner::LazyMapCleaner,
     limiter_sequence::LimiterSequence,
     log_message::{LogMessage, Origin},
 };
+use std::time::Duration;
 
 /// Result of evaluating a limiter set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,6 +25,8 @@ pub struct LimiterSet {
     limiters: LazyMap<Origin, LimiterSequence>,
     /// Global rate limiters (shared across all origins).
     global_limiters: LimiterSequence,
+    /// Lazy map cleaner
+    lazy_map_cleaner: LazyMapCleaner,
 }
 
 impl LimiterSet {
@@ -30,10 +34,12 @@ impl LimiterSet {
     pub fn new(
         make_limiters: impl Fn() -> LimiterSequence + Send + Sync + 'static,
         global_limiters: LimiterSequence,
+        max_origin_age: Duration,
     ) -> Self {
         Self {
             limiters: LazyMap::new(move |_key| make_limiters()),
             global_limiters,
+            lazy_map_cleaner: LazyMapCleaner::new(max_origin_age.as_secs() as i64),
         }
     }
 
@@ -54,6 +60,9 @@ impl LimiterSet {
                 .err()
                 .map(LimitResult::Limiter)
         });
+
+        self.lazy_map_cleaner
+            .maybe_clean(log_msg.get_timestamp_or_fallback(), &self.limiters);
 
         if let Some(result) = origin_result {
             return result;
