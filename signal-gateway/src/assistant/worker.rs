@@ -5,7 +5,6 @@ use crate::message_handler::AdminMessageResponse;
 use signal_gateway_assistant::{Assistant, AssistantResponse, ChatMessage};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
-use tracing::error;
 
 /// Result sender for prompt requests.
 pub type ResultSender = oneshot::Sender<Result<AdminMessageResponse, AssistantError>>;
@@ -84,29 +83,23 @@ impl AssistantWorker {
                 let cancel_token = self.cancellation_token.child_token();
 
                 let mut assistant_fut = self.assistant.prompt(msg, cancel_token.clone());
-                let mut was_canceled = false;
 
                 // If the assistant finishes normally, return its result.
                 // If we get a stop request, cancel the token, then wait for assistant to finish.
-                let result = tokio::select! {
+                let (result, was_canceled) = tokio::select! {
                     result = &mut assistant_fut => {
-                        result
+                        (result, false)
                     },
                     _ = self.stop_rx.recv() => {
                         cancel_token.cancel();
-                        was_canceled = true;
-                        assistant_fut.await
+                        (assistant_fut.await, true)
                     }
                 };
 
                 let response = match result {
                     Ok(Some(resp)) => Ok(assistant_response_to_admin(resp)),
                     Ok(None) => Err(AssistantError::Cancelled),
-                    Err(e) => {
-                        error!("Assistant error: {}", e);
-                        // Return the error message as the response text
-                        Ok(AdminMessageResponse::new(format!("Error: {}", e)))
-                    }
+                    Err(e) => Err(AssistantError::Assistant(e)),
                 };
 
                 let _ = sender.send(response);

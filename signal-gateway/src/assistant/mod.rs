@@ -1,7 +1,9 @@
 //! Assistant integration for AI-powered responses.
 //!
-//! This module provides a channel-based wrapper around an `Assistant` implementation,
-//! handling message queuing and background processing.
+//! This module provides a channel-based wrapper around a `dyn Assistant`.
+//! This is used to ensure that the assistant only responds to one request at
+//! a time -- this is usually better for token budget, and makes it easier
+//! to implement an assistant since extensive locking is not needed.
 
 mod worker;
 
@@ -31,6 +33,9 @@ pub enum AssistantError {
     /// Request was cancelled.
     #[error("request cancelled")]
     Cancelled,
+    /// Assistant error
+    #[error("assistant: {0}")]
+    Assistant(#[from] Box<dyn std::error::Error + Send + Sync>),
 }
 
 /// Assistant agent that processes requests via a background worker.
