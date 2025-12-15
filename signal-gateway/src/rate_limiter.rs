@@ -123,9 +123,7 @@ impl Limiter {
     ///
     /// Each source location (file:line) gets its own rate limiter with the full threshold.
     pub fn source_location(threshold: RateThreshold) -> Self {
-        Limiter::SourceLocation(SourceLocationRateLimiter::new(
-            threshold,
-        ))
+        Limiter::SourceLocation(SourceLocationRateLimiter::new(threshold))
     }
 }
 
@@ -184,7 +182,10 @@ impl SourceLocationRateLimiter {
     ///
     /// Returns true if the alert should fire (not rate-limited), false if suppressed.
     pub fn evaluate(&self, file: &str, line: &str, ts_sec: i64) -> bool {
-        let key = (file.to_owned().into_boxed_str(), line.to_owned().into_boxed_str());
+        let key = (
+            file.to_owned().into_boxed_str(),
+            line.to_owned().into_boxed_str(),
+        );
 
         let result = self.limiters.get(&key, |limiter| limiter.evaluate(ts_sec));
 

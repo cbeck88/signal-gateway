@@ -1,10 +1,9 @@
 //! Rate limiter set for managing per-route rate limiting.
 
-use super::evaluate_limiter_sequence;
 use crate::{
     concurrent_map::LazyMap,
-    log_message::{LogFilter, LogMessage, Origin},
-    rate_limiter::Limiter,
+    limiter_sequence::LimiterSequence,
+    log_message::{LogMessage, Origin},
 };
 
 /// Result of evaluating a limiter set.
@@ -18,22 +17,19 @@ pub enum LimitResult {
     GlobalLimiter(usize),
 }
 
-/// A set of limiters for a route, containing both per-origin and global limiters.
-/// Each limiter is paired with a filter that must match before the limiter is evaluated.
+/// A set of limiter sequences for a route, containing both per-origin and global limiters.
 pub struct LimiterSet {
     /// Per-origin rate limiters, keyed by origin. Lazily created.
-    /// Each entry is a (filter, limiter) pair.
-    limiters: LazyMap<Origin, Vec<(LogFilter, Limiter)>>,
+    limiters: LazyMap<Origin, LimiterSequence>,
     /// Global rate limiters (shared across all origins).
-    /// Each entry is a (filter, limiter) pair.
-    global_limiters: Vec<(LogFilter, Limiter)>,
+    global_limiters: LimiterSequence,
 }
 
 impl LimiterSet {
     /// Create a new limiter set with factories for per-origin and global limiters.
     pub fn new(
-        make_limiters: impl Fn() -> Vec<(LogFilter, Limiter)> + Send + Sync + 'static,
-        global_limiters: Vec<(LogFilter, Limiter)>,
+        make_limiters: impl Fn() -> LimiterSequence + Send + Sync + 'static,
+        global_limiters: LimiterSequence,
     ) -> Self {
         Self {
             limiters: LazyMap::new(move |_key| make_limiters()),
@@ -53,7 +49,8 @@ impl LimiterSet {
     pub fn evaluate(&self, log_msg: &LogMessage, origin: &Origin) -> LimitResult {
         // Check per-origin limiters
         let origin_result = self.limiters.get(origin, |origin_limiters| {
-            evaluate_limiter_sequence(origin_limiters, log_msg)
+            origin_limiters
+                .evaluate(log_msg)
                 .err()
                 .map(LimitResult::Limiter)
         });
@@ -63,7 +60,7 @@ impl LimiterSet {
         }
 
         // Check global limiters
-        if let Err(i) = evaluate_limiter_sequence(&self.global_limiters, log_msg) {
+        if let Err(i) = self.global_limiters.evaluate(log_msg) {
             return LimitResult::GlobalLimiter(i);
         }
 

@@ -48,7 +48,7 @@ mod rate_limiter_set;
 pub use rate_limiter_set::{LimitResult, LimiterSet};
 
 mod route;
-pub use route::{Destination, Limit, Route, evaluate_limiter_sequence};
+pub use route::{Destination, Route};
 
 pub use crate::rate_limiter::{Limiter, RateThreshold};
 

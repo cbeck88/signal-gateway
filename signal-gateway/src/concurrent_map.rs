@@ -18,7 +18,15 @@
 //! This is used instead of dash_map and once_map to avoid unnecessary complexity
 //! and dependencies, and give exactly the API needed in our application.
 
-use std::{borrow::Borrow, collections::HashMap, hash::Hash, sync::{atomic::{Ordering, AtomicUsize}, RwLock}};
+use std::{
+    borrow::Borrow,
+    collections::HashMap,
+    hash::Hash,
+    sync::{
+        RwLock,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 /// A concurrent hash map that uses read-preferring locking.
 ///
@@ -39,7 +47,7 @@ where
     pub fn new() -> Self {
         Self::default()
     }
-    
+
     /// Initialize a map with a given capacity
     pub fn with_capacity(cap: usize) -> Self {
         Self {
@@ -103,8 +111,9 @@ where
     }
 }
 
-impl <K, V> Default for ConcurrentMap<K, V>
-    where K: Eq + Hash
+impl<K, V> Default for ConcurrentMap<K, V>
+where
+    K: Eq + Hash,
 {
     fn default() -> Self {
         Self {
@@ -140,7 +149,7 @@ where
         Self {
             inner: ConcurrentMap::with_capacity(cap),
             factory: Box::new(factory),
-        }    
+        }
     }
 
     /// Get a value, creating it with the factory if it doesn't exist.
@@ -150,7 +159,8 @@ where
         A: FnOnce(&V) -> R,
     {
         let key = key.borrow();
-        self.inner.get_or_insert_with(key, || (self.factory)(key), access)
+        self.inner
+            .get_or_insert_with(key, || (self.factory)(key), access)
     }
 
     /// Access all entries in the map with a read lock.

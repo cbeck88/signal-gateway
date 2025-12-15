@@ -5,56 +5,10 @@
 
 use super::LimiterSet;
 use crate::{
-    log_message::{Level, LogFilter, LogMessage},
-    rate_limiter::{Limiter, RateThreshold},
+    limiter_sequence::Limit,
+    log_message::{Level, LogFilter},
 };
 use serde::Deserialize;
-
-/// Evaluate a sequence of (filter, limiter) pairs against a log message.
-///
-/// Returns `Ok(())` if no limiter blocks the message.
-/// Returns `Err(index)` if the limiter at `index` blocked the message.
-pub fn evaluate_limiter_sequence(
-    seq: &[(LogFilter, Limiter)],
-    log_msg: &LogMessage,
-) -> Result<(), usize> {
-    for (i, (filter, limiter)) in seq.iter().enumerate() {
-        if filter.matches(log_msg) && !limiter.evaluate(log_msg) {
-            return Err(i);
-        }
-    }
-    Ok(())
-}
-
-/// A rate limit rule for suppressing repeated alerts.
-///
-/// Combines a filter to match specific log messages with a rate threshold.
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Limit {
-    /// Filter criteria for messages this limit applies to.
-    #[serde(flatten)]
-    pub filter: LogFilter,
-    /// Rate threshold for suppressing alerts.
-    pub threshold: RateThreshold,
-    /// If true, rate limit independently per source location (file:line).
-    /// If false (default), count all matching events together.
-    #[serde(default)]
-    pub by_source_location: bool,
-}
-
-impl Limit {
-    /// Create the appropriate limiter for this limit configuration.
-    /// Returns a (filter, limiter) pair so the filter can be checked before rate limiting.
-    pub fn make_limiter(&self) -> (LogFilter, Limiter) {
-        let limiter = if self.by_source_location {
-            Limiter::source_location(self.threshold)
-        } else {
-            Limiter::multi(self.threshold)
-        };
-        (self.filter.clone(), limiter)
-    }
-}
 
 /// A route configuration for processing log messages.
 ///
@@ -99,15 +53,8 @@ impl Route {
     /// Create a limiter set from this route's limit configurations.
     pub fn make_limiter_set(&self) -> LimiterSet {
         let limits = self.limits.clone();
-        let global_limiters = self
-            .global_limits
-            .iter()
-            .map(|l| l.make_limiter())
-            .collect();
-        LimiterSet::new(
-            move || limits.iter().map(|l| l.make_limiter()).collect(),
-            global_limiters,
-        )
+        let global_limiters = self.global_limits.iter().collect();
+        LimiterSet::new(move || limits.iter().collect(), global_limiters)
     }
 }
 

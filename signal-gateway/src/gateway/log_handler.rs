@@ -1,13 +1,14 @@
 use super::{
-    LimitResult, Limiter, LimiterSet, SignalAlertMessage, Summary, evaluate_limiter_sequence,
+    LimitResult, LimiterSet, SignalAlertMessage, Summary,
     log_buffer::LogBuffer,
-    route::{Destination, Limit, Route},
+    route::{Destination, Route},
 };
 use crate::{
     assistant::{Tool, ToolExecutor, ToolResult},
     concurrent_map::LazyMap,
+    limiter_sequence::{Limit, LimiterSequence},
     log_format::LogFormatConfig,
-    log_message::{LogFilter, LogMessage, Origin},
+    log_message::{LogMessage, Origin},
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -88,8 +89,7 @@ pub struct LogHandler {
     /// Routes with their associated limiter sets.
     routes: Vec<(Route, LimiterSet)>,
     /// Overall rate limiters applied after route checks pass.
-    /// Each entry is a (filter, limiter) pair.
-    overall_limits: Vec<(LogFilter, Limiter)>,
+    overall_limits: LimiterSequence,
 }
 
 impl LogHandler {
@@ -104,11 +104,7 @@ impl LogHandler {
             .map(|route| (route.clone(), route.make_limiter_set()))
             .collect();
 
-        let overall_limits = config
-            .overall_limits
-            .iter()
-            .map(|limit| limit.make_limiter())
-            .collect();
+        let overall_limits = config.overall_limits.iter().collect();
 
         let buffer_size = config.log_buffer_size;
 
@@ -216,7 +212,10 @@ impl LogHandler {
                 summary: Summary::Prefix(first_msg_len),
                 destination_override,
             }) {
-                error!("Could not send alert message, queue is closed:\n{}", &err.0.text[0..first_msg_len]);
+                error!(
+                    "Could not send alert message, queue is closed:\n{}",
+                    &err.0.text[0..first_msg_len]
+                );
             }
         }
     }
@@ -276,7 +275,7 @@ impl LogHandler {
         };
 
         // At least one route passed, now check overall limits
-        if let Err(i) = evaluate_limiter_sequence(&self.overall_limits, log_msg) {
+        if let Err(i) = self.overall_limits.evaluate(log_msg) {
             return Err(SuppressionReason::OverallLimiter(i));
         }
 
