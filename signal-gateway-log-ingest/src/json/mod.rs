@@ -652,7 +652,6 @@ mod tests {
         // Second message fails with error
         let result = parse_next_message(&mut reader).await;
         assert!(result.is_err());
-        // After error, caller should close connection - no third read attempted
     }
 
     #[tokio::test]
