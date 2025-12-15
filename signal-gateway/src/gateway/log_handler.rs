@@ -209,14 +209,14 @@ impl LogHandler {
         // Send alert if we have formatted text
         if let Some((text, first_msg_len)) = formatted_text {
             let destination_override = rate_limit_result.ok().flatten();
-            if let Err(_err) = self.signal_alert_mq_tx.send(SignalAlertMessage {
+            if let Err(err) = self.signal_alert_mq_tx.send(SignalAlertMessage {
                 origin: Some(origin),
                 text,
                 attachment_paths: Default::default(),
                 summary: Summary::Prefix(first_msg_len),
                 destination_override,
             }) {
-                error!("Could not send alert message, queue is closed");
+                error!("Could not send alert message, queue is closed:\n{}", &err.0.text[0..first_msg_len]);
             }
         }
     }

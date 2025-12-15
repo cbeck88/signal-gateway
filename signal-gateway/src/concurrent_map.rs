@@ -18,7 +18,7 @@
 //! This is used instead of dash_map and once_map to avoid unnecessary complexity
 //! and dependencies, and give exactly the API needed in our application.
 
-use std::{borrow::Borrow, collections::HashMap, hash::Hash, sync::RwLock};
+use std::{borrow::Borrow, collections::HashMap, hash::Hash, sync::{atomic::{Ordering, AtomicUsize}, RwLock}};
 
 /// A concurrent hash map that uses read-preferring locking.
 ///
@@ -28,6 +28,7 @@ use std::{borrow::Borrow, collections::HashMap, hash::Hash, sync::RwLock};
 #[derive(Debug)]
 pub struct ConcurrentMap<K, V> {
     inner: RwLock<HashMap<K, V>>,
+    len_cache: AtomicUsize,
 }
 
 impl<K, V> ConcurrentMap<K, V>
@@ -37,6 +38,14 @@ where
     /// Make a new empty map.
     pub fn new() -> Self {
         Self::default()
+    }
+    
+    /// Initialize a map with a given capacity
+    pub fn with_capacity(cap: usize) -> Self {
+        Self {
+            inner: RwLock::new(HashMap::with_capacity(cap)),
+            len_cache: Default::default(),
+        }
     }
 
     /// Find and access a value in the map. If it doesn't exist, create it using the create function.
@@ -60,7 +69,10 @@ where
 
         // Value doesn't exist, need to create with write lock
         let mut guard = self.inner.write().unwrap();
-        let value = guard.entry(key.clone()).or_insert_with(create);
+        let value = guard.entry(key.clone()).or_insert_with(|| {
+            self.len_cache.fetch_add(1, Ordering::SeqCst);
+            (create)()
+        });
         access(value)
     }
 
@@ -74,17 +86,20 @@ where
     }
 
     /// Retain only entries that satisfy the predicate.
-    pub fn retain<F>(&self, f: F)
+    pub fn retain<F>(&self, f: F) -> usize
     where
         F: FnMut(&K, &mut V) -> bool,
     {
         let mut guard = self.inner.write().unwrap();
         guard.retain(f);
+        let len = guard.len();
+        self.len_cache.store(len, Ordering::SeqCst);
+        len
     }
 
     /// Get the number of entries in the map.
     pub fn len(&self) -> usize {
-        self.inner.read().unwrap().len()
+        self.len_cache.load(Ordering::SeqCst)
     }
 }
 
@@ -93,7 +108,8 @@ impl <K, V> Default for ConcurrentMap<K, V>
 {
     fn default() -> Self {
         Self {
-            inner: RwLock::new(Default::default())
+            inner: RwLock::new(Default::default()),
+            len_cache: Default::default(),
         }
     }
 }
@@ -119,6 +135,14 @@ where
         }
     }
 
+    /// Create a new lazy map with given capacity, and factory
+    pub fn with_capacity(cap: usize, factory: impl Fn(&K) -> V + Send + Sync + 'static) -> Self {
+        Self {
+            inner: ConcurrentMap::with_capacity(cap),
+            factory: Box::new(factory),
+        }    
+    }
+
     /// Get a value, creating it with the factory if it doesn't exist.
     pub fn get<Q, R, A>(&self, key: Q, access: A) -> R
     where
@@ -138,11 +162,11 @@ where
     }
 
     /// Retain only entries that satisfy the predicate.
-    pub fn retain<F>(&self, f: F)
+    pub fn retain<F>(&self, f: F) -> usize
     where
         F: FnMut(&K, &mut V) -> bool,
     {
-        self.inner.retain(f);
+        self.inner.retain(f)
     }
 
     /// Returns the number of entries in the map.

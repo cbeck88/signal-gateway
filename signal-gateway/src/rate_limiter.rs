@@ -89,9 +89,6 @@ impl TryFrom<String> for RateThreshold {
     }
 }
 
-/// Maximum entries in a source-location rate limiter before triggering cleanup.
-const SOURCE_LOCATION_MAX_ENTRIES: usize = 2000;
-
 /// An enum over rate limiter implementations
 pub enum Limiter {
     /// Applies a threshold based on recent occurrences of the event.
@@ -128,7 +125,6 @@ impl Limiter {
     pub fn source_location(threshold: RateThreshold) -> Self {
         Limiter::SourceLocation(SourceLocationRateLimiter::new(
             threshold,
-            SOURCE_LOCATION_MAX_ENTRIES,
         ))
     }
 }
@@ -168,19 +164,19 @@ impl SimpleRateLimiter {
 /// gets its own `MultiRateLimiter` with the full threshold.
 pub struct SourceLocationRateLimiter {
     /// Maps (file, line) -> rate limiter for that location
-    limiters: LazyMap<(String, String), MultiRateLimiter>,
+    limiters: LazyMap<(Box<str>, Box<str>), MultiRateLimiter>,
     /// Threshold for creating new limiters (used for cleanup window calculation)
     threshold: RateThreshold,
     /// Maximum entries before triggering cleanup
-    max_entries: usize,
+    last_cleanup_size: Mutex<usize>,
 }
 
 impl SourceLocationRateLimiter {
-    pub fn new(threshold: RateThreshold, max_entries: usize) -> Self {
+    pub fn new(threshold: RateThreshold) -> Self {
         Self {
-            limiters: LazyMap::new(move |_key| MultiRateLimiter::from(threshold)),
+            limiters: LazyMap::with_capacity(16, move |_key| MultiRateLimiter::from(threshold)),
             threshold,
-            max_entries,
+            last_cleanup_size: Mutex::new(8),
         }
     }
 
@@ -188,26 +184,30 @@ impl SourceLocationRateLimiter {
     ///
     /// Returns true if the alert should fire (not rate-limited), false if suppressed.
     pub fn evaluate(&self, file: &str, line: &str, ts_sec: i64) -> bool {
-        let key = (file.to_owned(), line.to_owned());
+        let key = (file.to_owned().into_boxed_str(), line.to_owned().into_boxed_str());
 
         let result = self.limiters.get(&key, |limiter| limiter.evaluate(ts_sec));
 
-        // Clean up if we've exceeded max entries
-        if self.limiters.len() > self.max_entries {
-            self.cleanup(ts_sec);
+        // Opportunistically check for cleanup, but not if someone else is cleaning up
+        if let Ok(mut lk) = self.last_cleanup_size.try_lock() {
+            // If we're twice as large as the ending count from the last time we
+            // cleaned up, then let's try to clean up again.
+            if self.limiters.len() >= 2 * *lk {
+                *lk = self.cleanup(ts_sec);
+            }
         }
 
         result
     }
 
     /// Remove entries where all timestamps are older than the window
-    fn cleanup(&self, now: i64) {
+    fn cleanup(&self, now: i64) -> usize {
         let window = self.threshold.duration.as_secs() as i64;
         let cutoff = now - window;
         self.limiters.retain(|_, limiter| {
             // Keep if any timestamp is recent enough
             limiter.get_latest() > cutoff
-        });
+        })
     }
 }
 
@@ -438,7 +438,7 @@ mod tests {
             duration: Duration::from_secs(600),
             comparator_is_ge: true,
         };
-        let limiter = SourceLocationRateLimiter::new(threshold, 100);
+        let limiter = SourceLocationRateLimiter::new(threshold);
 
         // First alert from location A: no previous event to compare, returns false
         assert!(!limiter.evaluate("file_a.rs", "10", 1000));
@@ -466,7 +466,7 @@ mod tests {
             duration: Duration::from_secs(600),
             comparator_is_ge: true,
         };
-        let limiter = SourceLocationRateLimiter::new(threshold, 100);
+        let limiter = SourceLocationRateLimiter::new(threshold);
 
         // First three alerts: buffer filling, evicted=0, returns false
         assert!(!limiter.evaluate("file.rs", "10", 1000));
@@ -495,7 +495,7 @@ mod tests {
             duration: Duration::from_secs(600),
             comparator_is_ge: true,
         };
-        let limiter = SourceLocationRateLimiter::new(threshold, 100);
+        let limiter = SourceLocationRateLimiter::new(threshold);
 
         // First two events at each location: buffer filling, evicted=0
         assert!(!limiter.evaluate("file.rs", "10", 1000));
@@ -522,7 +522,7 @@ mod tests {
             duration: Duration::from_secs(600),
             comparator_is_ge: false,
         };
-        let limiter = SourceLocationRateLimiter::new(threshold, 100);
+        let limiter = SourceLocationRateLimiter::new(threshold);
 
         // First three alerts: evicted=0, threshold_met=false, returns true
         assert!(limiter.evaluate("file.rs", "10", 1000));
@@ -703,29 +703,25 @@ mod tests {
 
     #[test]
     fn source_location_rate_limiter_cleanup() {
-        // Use small max_entries to trigger cleanup
+        // Cleanup triggers when len >= 2 * last_cleanup_size (starts at 8, so triggers at 16)
         let threshold = RateThreshold {
             times: 1,
             duration: Duration::from_secs(600),
             comparator_is_ge: true,
         };
-        let limiter = SourceLocationRateLimiter::new(threshold, 3);
+        let limiter = SourceLocationRateLimiter::new(threshold);
 
-        // Fill up the limiter (first events return false with evicted-vs-latest)
-        assert!(!limiter.evaluate("file1.rs", "1", 1000));
-        assert!(!limiter.evaluate("file2.rs", "2", 1000));
-        assert!(!limiter.evaluate("file3.rs", "3", 1000));
-        assert_eq!(limiter.limiters.len(), 3);
+        // Add 15 stale entries at timestamp 1000
+        for i in 0..15 {
+            limiter.evaluate(&format!("file{}.rs", i), &i.to_string(), 1000);
+        }
+        assert_eq!(limiter.limiters.len(), 15);
 
-        // Add one more, triggering cleanup - but all are fresh so none removed
-        assert!(!limiter.evaluate("file4.rs", "4", 1000));
-        // Still have 4 after cleanup since none are old enough
-        assert_eq!(limiter.limiters.len(), 4);
+        // Add one more fresh entry at timestamp 2000 - this triggers cleanup (16 >= 2*8)
+        // cutoff = 2000 - 600 = 1400, so entries with latest <= 1400 are removed
+        limiter.evaluate("fresh.rs", "1", 2000);
 
-        // Now add with a timestamp far in the future - old entries should be cleaned
-        // (cutoff = 2000 - 600 = 1400, entries with latest <= 1400 are removed)
-        assert!(!limiter.evaluate("file5.rs", "5", 2000));
-        // Should have cleaned up entries from timestamp 1000 (older than 600 sec window)
+        // Only the fresh entry should remain
         assert_eq!(limiter.limiters.len(), 1);
     }
 }
