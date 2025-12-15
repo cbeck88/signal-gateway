@@ -59,7 +59,7 @@ pub struct LogHandlerConfig {
     #[conf(long, env, default_value = "64")]
     pub log_buffer_size: usize,
     /// Max age of an origin, after this we remove it to reclaim memory
-    #[conf(long, env, value_parser = conf_extra::parse_duration, default_value = "3d")]
+    #[conf(long, env, value_parser = conf_extra::parse_duration, default_value = "72h")]
     pub max_origin_age: Duration,
     /// Debug logging level for suppressed messages.
     /// 0 = no logging, 1 = log only overall limiter, 2 = log routes + overall, 3 = log all.
