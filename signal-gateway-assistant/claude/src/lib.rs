@@ -1,12 +1,14 @@
 //! Claude API implementation of the Assistant trait.
 
+mod api;
 mod message_buffer;
 
+use api::{
+    ContentBlock, ErrorResponse, MessageContent, MessagesRequest, MessagesResponse, SystemContent,
+};
 use conf::Conf;
 use message_buffer::MessageBuffer;
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use signal_gateway_assistant::{Assistant, AssistantResponse, ChatMessage, Tool, ToolExecutor};
+use signal_gateway_assistant::{Assistant, AssistantResponse, ChatMessage, ToolExecutor};
 use std::{path::PathBuf, sync::Weak, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
@@ -484,120 +486,4 @@ fn message_to_content(msg: ChatMessage) -> MessageContent {
         role: msg.sent_by.api_role().into(),
         content: vec![ContentBlock::Text { text: text.into() }],
     }
-}
-// ---- API Types ----
-
-/// Request body for the Claude Messages API.
-#[derive(Serialize)]
-struct MessagesRequest<'a> {
-    model: &'a str,
-    max_tokens: u32,
-    system: &'a [SystemContent],
-    messages: &'a [MessageContent],
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    tools: Vec<Tool>,
-}
-
-/// A content block in the system prompt array.
-#[derive(Clone, Default, Serialize)]
-struct SystemContent {
-    #[serde(rename = "type")]
-    content_type: &'static str,
-    text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cache_control: Option<CacheControl>,
-}
-
-impl SystemContent {
-    fn text(text: impl Into<String>) -> Self {
-        Self {
-            content_type: "text",
-            text: text.into(),
-            cache_control: None,
-        }
-    }
-
-    fn set_cached(&mut self) {
-        self.cache_control = Some(CacheControl::ephemeral());
-    }
-}
-
-/// Cache control directive for prompt caching.
-#[derive(Clone, Serialize)]
-struct CacheControl {
-    #[serde(rename = "type")]
-    cache_type: &'static str,
-}
-
-impl CacheControl {
-    fn ephemeral() -> Self {
-        Self {
-            cache_type: "ephemeral",
-        }
-    }
-}
-
-/// A message in the conversation (can have multiple content blocks).
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct MessageContent {
-    role: Box<str>,
-    content: Vec<ContentBlock>,
-}
-
-impl MessageContent {
-    fn assistant(blocks: Vec<ContentBlock>) -> Self {
-        Self {
-            role: "assistant".into(),
-            content: blocks,
-        }
-    }
-
-    fn tool_result(tool_use_id: String, content: String, is_error: bool) -> Self {
-        Self {
-            role: "user".into(),
-            content: vec![ContentBlock::ToolResult {
-                tool_use_id: tool_use_id.into(),
-                content: content.into(),
-                is_error: if is_error { Some(true) } else { None },
-            }],
-        }
-    }
-}
-
-/// A content block in the request/response.
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ContentBlock {
-    Text {
-        text: Box<str>,
-    },
-    ToolUse {
-        id: Box<str>,
-        name: Box<str>,
-        input: Value,
-    },
-    ToolResult {
-        tool_use_id: Box<str>,
-        content: Box<str>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        is_error: Option<bool>,
-    },
-}
-
-/// Response from the Claude Messages API.
-#[derive(Debug, Deserialize)]
-struct MessagesResponse {
-    content: Vec<ContentBlock>,
-    stop_reason: Box<str>,
-}
-
-/// Error response from the Claude API.
-#[derive(Deserialize)]
-struct ErrorResponse {
-    error: ApiErrorDetail,
-}
-
-#[derive(Deserialize)]
-struct ApiErrorDetail {
-    message: Box<str>,
 }

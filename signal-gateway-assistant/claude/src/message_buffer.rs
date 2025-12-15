@@ -1,15 +1,13 @@
 //! Message buffer with cached character count.
 
+use crate::api::{ContentBlock, MessageContent};
 use serde_json::Value;
 use std::collections::VecDeque;
-use std::fmt;
-
-use crate::{ContentBlock, MessageContent};
 
 /// A buffer of messages with cached total character count.
-///
-/// Uses `VecDeque` for efficient front removal during compaction.
+#[derive(Clone, Debug, Default)]
 pub struct MessageBuffer {
+    /// `VecDeque` to easily remove oldest messages if needed
     messages: VecDeque<MessageContent>,
     /// Cached total character count of all messages.
     total_chars: usize,
@@ -19,12 +17,12 @@ impl MessageBuffer {
     /// Create a new empty message buffer.
     pub fn new() -> Self {
         Self {
-            messages: VecDeque::new(),
+            messages: VecDeque::with_capacity(256),
             total_chars: 0,
         }
     }
 
-    /// Push a message to the back of the buffer.
+    /// Push a message to the back.
     pub fn push(&mut self, msg: MessageContent) {
         self.total_chars += message_chars(&msg);
         self.messages.push_back(msg);
@@ -58,7 +56,7 @@ impl MessageBuffer {
         self.total_chars
     }
 
-    /// Returns a reference to the last message, if any.
+    /// Get the last message, if any.
     pub fn last(&self) -> Option<&MessageContent> {
         self.messages.back()
     }
@@ -68,22 +66,6 @@ impl MessageBuffer {
     /// Note: This may require making the deque contiguous first.
     pub fn make_contiguous(&mut self) -> &[MessageContent] {
         self.messages.make_contiguous()
-    }
-}
-
-impl Default for MessageBuffer {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl fmt::Debug for MessageBuffer {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MessageBuffer")
-            .field("len", &self.messages.len())
-            .field("total_chars", &self.total_chars)
-            .field("messages", &self.messages)
-            .finish()
     }
 }
 
@@ -99,23 +81,25 @@ fn message_chars(msg: &MessageContent) -> usize {
         .sum()
 }
 
-/// Estimate the serialized JSON size of a value.
+// Estimate the serialized JSON size of a value.
+// https://github.com/serde-rs/json/issues/784#issuecomment-877688512
 fn estimate_json_size(value: &Value) -> usize {
-    match value {
-        Value::Null => 4,
-        Value::Bool(true) => 4,
-        Value::Bool(false) => 5,
-        Value::Number(n) => n.to_string().len(),
-        Value::String(s) => s.len() + 2,
-        Value::Array(arr) => {
-            2 + arr.iter().map(estimate_json_size).sum::<usize>() + arr.len().saturating_sub(1)
+    use serde::Serialize;
+    use std::io::{Result, Write};
+
+    struct ByteCount(usize);
+
+    impl Write for ByteCount {
+        fn write(&mut self, buf: &[u8]) -> Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
         }
-        Value::Object(obj) => {
-            2 + obj
-                .iter()
-                .map(|(k, v)| k.len() + 3 + estimate_json_size(v))
-                .sum::<usize>()
-                + obj.len().saturating_sub(1)
+        fn flush(&mut self) -> Result<()> {
+            Ok(())
         }
     }
+
+    let mut ser = serde_json::Serializer::new(ByteCount(0));
+    value.serialize(&mut ser).unwrap();
+    ser.into_inner().0
 }

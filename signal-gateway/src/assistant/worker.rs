@@ -25,10 +25,11 @@ pub enum Input {
 /// Background worker that processes assistant requests serially.
 pub struct AssistantWorker {
     assistant: Box<dyn Assistant>,
+    // Serialize input
     input_rx: mpsc::Receiver<Input>,
-    /// Used when the user wants to cancel the current requests, but not shutdown the service
+    // Used when the user wants to cancel the current requests, but not shutdown the service
     stop_rx: mpsc::Receiver<()>,
-    /// Used when the user wants to shut down the service
+    // Used when the user wants to shut down the service
     cancellation_token: CancellationToken,
 }
 
