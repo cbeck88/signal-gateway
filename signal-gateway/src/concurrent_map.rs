@@ -1,8 +1,16 @@
 //! A concurrent map with read-preferring access pattern.
 //!
-//! This module provides a concurrent hash map that optimizes for the common case
-//! where values already exist, using a read lock first before falling back to a
-//! write lock for insertions.
+//! This module provides a simple concurrent hash map with limited API,
+//! which fills in requested values that don't exist using a default function,
+//! taking a write lock only when necessary to do so.
+//!
+//! This is used to categorize logs by their source, or implement special
+//! rate limiters that depend on the source of the log.
+//!
+//! The idea is that in these use-cases, there is a relatively small set of
+//! sources, and insertions occur only a few times at the beginning of the process.
+//! Then almost all accesses are to existing elements, and from that point on,
+//! only read locks are taken when using this API.
 
 use std::{borrow::Borrow, collections::HashMap, hash::Hash, sync::RwLock};
 
@@ -10,7 +18,7 @@ use std::{borrow::Borrow, collections::HashMap, hash::Hash, sync::RwLock};
 ///
 /// When accessing a value, it first tries to acquire a read lock. If the key
 /// exists, it uses the value immediately. If the key doesn't exist, it upgrades
-/// to a write lock and inserts a new value.
+/// to a write lock and inserts a new value, and then accesses it.
 #[derive(Debug)]
 pub struct ConcurrentMap<K, V> {
     inner: RwLock<HashMap<K, V>>,
@@ -20,23 +28,14 @@ impl<K, V> ConcurrentMap<K, V>
 where
     K: Eq + Hash + Clone,
 {
-    /// Create a new empty concurrent map.
+    /// Make a new empty map.
     pub fn new() -> Self {
-        Self {
-            inner: RwLock::new(HashMap::new()),
-        }
+        Self::default()
     }
 
-    /// Get or insert a value, then access it.
+    /// Find and access a value in the map. If it doesn't exist, create it using the create function.
     ///
-    /// This method uses a read-preferring pattern:
-    /// 1. First acquires a read lock and looks for the key
-    /// 2. If found, calls `access` with a reference to the value
-    /// 3. If not found, acquires a write lock, inserts using `create`, then calls `access`
-    ///
-    /// The key is only cloned when a new value needs to be inserted.
-    ///
-    /// The lock is held while `access` runs.
+    /// Note: May deadlock if access or create calls `get_or_insert_with` recursively in the same hashmap.
     pub fn get_or_insert_with<Q, R, F, A>(&self, key: Q, create: F, access: A) -> R
     where
         Q: Borrow<K>,
@@ -55,15 +54,11 @@ where
 
         // Value doesn't exist, need to create with write lock
         let mut guard = self.inner.write().unwrap();
-        // Use entry API - handles the race where another task inserted while we waited
         let value = guard.entry(key.clone()).or_insert_with(create);
         access(value)
     }
 
     /// Access all entries in the map with a read lock.
-    ///
-    /// Acquires a read lock and calls `access` with a reference to the underlying HashMap.
-    /// The lock is held while `access` runs.
     pub fn with_read_lock<R, A>(&self, access: A) -> R
     where
         A: FnOnce(&HashMap<K, V>) -> R,
@@ -73,8 +68,6 @@ where
     }
 
     /// Retain only entries that satisfy the predicate.
-    ///
-    /// Acquires a write lock and calls `retain` on the underlying HashMap.
     pub fn retain<F>(&self, f: F)
     where
         F: FnMut(&K, &mut V) -> bool,
@@ -83,18 +76,19 @@ where
         guard.retain(f);
     }
 
-    /// Returns the number of entries in the map.
+    /// Get the number of entries in the map.
     pub fn len(&self) -> usize {
         self.inner.read().unwrap().len()
     }
 }
 
-impl<K, V> Default for ConcurrentMap<K, V>
-where
-    K: Eq + Hash + Clone,
+impl <K, V> Default for ConcurrentMap<K, V>
+    where K: Eq + Hash
 {
     fn default() -> Self {
-        Self::new()
+        Self {
+            inner: RwLock::new(Default::default())
+        }
     }
 }
 
@@ -111,7 +105,7 @@ impl<K, V> LazyMap<K, V>
 where
     K: Eq + Hash + Clone,
 {
-    /// Create a new lazy map with the given factory for creating values.
+    /// Create a new lazy map with the given factory for creating initial values.
     pub fn new(factory: impl Fn() -> V + Send + Sync + 'static) -> Self {
         Self {
             inner: ConcurrentMap::new(),
@@ -120,9 +114,6 @@ where
     }
 
     /// Get a value, creating it with the factory if it doesn't exist.
-    ///
-    /// Uses the factory provided at construction time to create new values.
-    /// The key is only cloned when a new value needs to be inserted.
     pub fn get<Q, R, A>(&self, key: Q, access: A) -> R
     where
         Q: Borrow<K>,

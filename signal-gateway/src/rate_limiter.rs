@@ -26,8 +26,8 @@ pub struct RateThreshold {
     pub times: usize,
     /// Time window for counting events.
     pub duration: Duration,
-    /// If true, alert when rate >= times/duration (burst detection).
-    /// If false, alert when rate < times/duration (suppression).
+    /// If true, passes threshold when rate >= times/duration (burst detection).
+    /// If false, passes threshold when rate < times/duration (suppression).
     pub comparator_is_ge: bool,
 }
 
@@ -58,13 +58,11 @@ impl FromStr for RateThreshold {
         let comparator_is_ge = match comparator.trim() {
             ">=" | "=>" => true,
             ">" => {
-                // > N is equivalent to >= N+1
                 times += 1;
                 true
             }
             "<" => false,
             "<=" | "=<" => {
-                // <= N is equivalent to < N+1
                 times += 1;
                 false
             }
@@ -94,9 +92,9 @@ impl TryFrom<String> for RateThreshold {
 /// Maximum entries in a source-location rate limiter before triggering cleanup.
 const SOURCE_LOCATION_MAX_ENTRIES: usize = 2000;
 
-/// A rate limiter that can be either a multi-rate limiter or a source-location limiter.
+/// An enum over rate limiter implementations
 pub enum Limiter {
-    /// Counts events regardless of source location.
+    /// Applies a threshold based on recent occurrences of the event.
     Multi(MultiRateLimiter),
     /// Tracks events independently per source location (file:line).
     SourceLocation(SourceLocationRateLimiter),
@@ -307,7 +305,7 @@ impl MultiRateLimiterInner {
         let prev_oldest = self.timestamps[self.idx];
         let n = self.timestamps.len();
 
-        // find a place to insert it, trying at idx and comparing with idx - 1 entry. first.
+        // Trying to insert first at idx and comparing with idx - 1 entry, walk towards 0.
         for j in (0..self.idx).rev() {
             if self.timestamps[j] <= new_timestamp {
                 self.timestamps[j + 1] = new_timestamp;
@@ -316,8 +314,7 @@ impl MultiRateLimiterInner {
                 self.timestamps[j + 1] = self.timestamps[j];
             }
         }
-        // This is the wrap-around point, and it happens when j is n -1 conceptually,
-        // and only if n-1 != 0.
+        // Ring buffer wraparound point: conceptually when j is n-1, and only if n-1 != 0.
         if n > 1 {
             if self.timestamps[n - 1] <= new_timestamp {
                 self.timestamps[0] = new_timestamp;
@@ -326,7 +323,7 @@ impl MultiRateLimiterInner {
                 self.timestamps[0] = self.timestamps[n - 1];
             }
         }
-        // Walk towards self.idx from n - 2, trying to insert
+        // Now walk from n-2 towards self.idx
         for j in (self.idx + 1..n - 1).rev() {
             if self.timestamps[j] <= new_timestamp {
                 self.timestamps[j + 1] = new_timestamp;
@@ -593,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_rate_limiter_inner_chaotic() {
+    fn multi_rate_limiter_inner_non_monotonic() {
         let mut inner = MultiRateLimiterInner::new(3);
         inner.assert_invariant();
 
