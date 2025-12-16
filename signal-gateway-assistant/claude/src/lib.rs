@@ -8,10 +8,20 @@ use api::{
 };
 use conf::Conf;
 use message_buffer::MessageBuffer;
+use metrics::{counter, gauge};
 use signal_gateway_assistant::{Assistant, AssistantResponse, ChatMessage, ToolExecutor};
 use std::{path::PathBuf, sync::Weak, time::Duration};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
+
+// Metric names
+const METRIC_API_CALLS: &str = "claude_api_calls_total";
+const METRIC_REQUEST_CHARS: &str = "claude_request_chars";
+const METRIC_CHARS_SENT: &str = "claude_chars_sent_total";
+const METRIC_TOOL_USE: &str = "claude_tool_use_total";
+const METRIC_BUFFER_SIZE: &str = "claude_buffer_size_chars";
+const METRIC_SUMMARY_SIZE: &str = "claude_summary_size_chars";
+const METRIC_COMPACTIONS: &str = "claude_compactions_total";
 
 /// The Anthropic API version header value.
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
@@ -146,6 +156,12 @@ impl ClaudeAssistant {
         })
     }
 
+    /// Update the buffer and summary size gauge metrics.
+    fn update_size_metrics(&self) {
+        gauge!(METRIC_BUFFER_SIZE).set(self.messages.total_chars() as f64);
+        gauge!(METRIC_SUMMARY_SIZE).set(self.summary.len() as f64);
+    }
+
     /// Check if automatic compaction should be triggered and handle it.
     async fn maybe_compact(&mut self) {
         let buffer_chars = self.messages.total_chars();
@@ -198,6 +214,10 @@ impl ClaudeAssistant {
         if self.messages.is_empty() {
             return;
         }
+
+        // Record compaction event
+        let compaction_type = if is_automatic { "automatic" } else { "manual" };
+        counter!(METRIC_COMPACTIONS, "type" => compaction_type).increment(1);
 
         if is_automatic {
             self.last_auto_compaction = Some(std::time::Instant::now());
@@ -349,6 +369,12 @@ impl ClaudeAssistant {
                 tools: tools.clone(),
             };
 
+            // Calculate request size for metrics
+            let request_json = serde_json::to_string(&request_body).unwrap_or_default();
+            let request_chars = request_json.len();
+            gauge!(METRIC_REQUEST_CHARS).set(request_chars as f64);
+            counter!(METRIC_CHARS_SENT).increment(request_chars as u64);
+
             let response = tokio::select! {
                 result = self
                     .client
@@ -360,6 +386,9 @@ impl ClaudeAssistant {
                     .send() => result?,
                 _ = cancel.cancelled() => return Ok(None),
             };
+
+            // Record API call
+            counter!(METRIC_API_CALLS).increment(1);
 
             if !response.status().is_success() {
                 let error: ErrorResponse = response.json().await?;
@@ -385,6 +414,9 @@ impl ClaudeAssistant {
                         if cancel.is_cancelled() {
                             return Ok(None);
                         }
+
+                        // Record tool use
+                        counter!(METRIC_TOOL_USE, "tool" => name.to_string()).increment(1);
 
                         info!("Claude tool use: {}({})", name, input);
                         let tool_result = tokio::select! {
@@ -442,6 +474,7 @@ impl Assistant for ClaudeAssistant {
         let mc = message_to_content(message);
         self.messages.push(mc);
         self.maybe_compact().await;
+        self.update_size_metrics();
     }
 
     async fn prompt(
@@ -454,15 +487,19 @@ impl Assistant for ClaudeAssistant {
         self.maybe_compact().await;
 
         if cancel.is_cancelled() {
+            self.update_size_metrics();
             return Ok(None);
         }
 
-        Ok(self.handle_request(&cancel).await?)
+        let result = self.handle_request(&cancel).await?;
+        self.update_size_metrics();
+        Ok(result)
     }
 
     async fn compact(&mut self, cancel: CancellationToken) {
         // Manual compaction always runs (is_automatic = false)
         self.do_compact(false, Some(&cancel)).await;
+        self.update_size_metrics();
     }
 
     fn debug_log(&mut self) {

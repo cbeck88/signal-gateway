@@ -17,6 +17,7 @@ async-trait = { workspace = true }
 chrono = { workspace = true }
 conf = { workspace = true }
 conf-extra = { workspace = true }
+metrics = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

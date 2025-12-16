@@ -23,6 +23,7 @@ displaydoc = { workspace = true }
 futures-util = { workspace = true }
 humantime = { workspace = true }
 jsonrpsee = { workspace = true }
+metrics = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
 serde = { workspace = true }

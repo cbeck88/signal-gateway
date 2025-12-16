@@ -13,6 +13,10 @@ const TEST_REPO: &str = "ver-stub-rs";
 const TEST_SHA: &str = "79b98e25f27ae4f5dd73a5a3d8f37dad655a57e8";
 
 fn create_test_app_code() -> AppCode {
+    create_test_app_code_with_glob(vec![])
+}
+
+fn create_test_app_code_with_glob(glob: Vec<String>) -> AppCode {
     let config = AppCodeConfig {
         name: "test-app".to_string(),
         github: GitHubRepo {
@@ -20,6 +24,8 @@ fn create_test_app_code() -> AppCode {
             repo: TEST_REPO.to_string(),
         },
         token_file: None, // Public repo, no auth needed
+        glob,
+        include_non_utf8: false,
     };
 
     let sha = TEST_SHA.to_string();
@@ -172,4 +178,79 @@ async fn test_search_no_matches() {
         .expect("search failed");
 
     assert!(result.contains("No matches"), "Should report no matches");
+}
+
+#[tokio::test]
+async fn test_glob_filter_rust_files_only() {
+    // Only include .rs files
+    let app = create_test_app_code_with_glob(vec!["**/*.rs".to_string()]);
+
+    let result = app.find(Some("*")).await.expect("find failed");
+
+    // Should find Rust files
+    assert!(result.contains(".rs"), "Should contain .rs files");
+
+    // Should NOT find non-Rust files
+    assert!(!result.contains("Cargo.toml"), "Should not contain Cargo.toml");
+    assert!(!result.contains("README.md"), "Should not contain README.md");
+    assert!(!result.contains("tests.sh"), "Should not contain tests.sh");
+}
+
+#[tokio::test]
+async fn test_glob_filter_specific_directory() {
+    // Only include files in ver-stub/src
+    let app = create_test_app_code_with_glob(vec!["ver-stub/src/**".to_string()]);
+
+    let result = app.find(Some("*")).await.expect("find failed");
+
+    // Should find files in ver-stub/src
+    assert!(
+        result.contains("ver-stub/src/lib.rs"),
+        "Should contain ver-stub/src/lib.rs"
+    );
+
+    // Should NOT find files outside ver-stub/src
+    assert!(
+        !result.contains("ver-stub-build/"),
+        "Should not contain ver-stub-build files"
+    );
+    assert!(!result.contains("Cargo.toml"), "Should not contain root Cargo.toml");
+}
+
+#[tokio::test]
+async fn test_glob_filter_multiple_patterns() {
+    // Include both Cargo.toml files and shell scripts
+    let app = create_test_app_code_with_glob(vec![
+        "**/Cargo.toml".to_string(),
+        "*.sh".to_string(),
+    ]);
+
+    let result = app.find(Some("*")).await.expect("find failed");
+
+    // Should find Cargo.toml files
+    assert!(result.contains("Cargo.toml"), "Should contain Cargo.toml");
+
+    // Should find shell scripts
+    assert!(result.contains("tests.sh"), "Should contain tests.sh");
+
+    // Should NOT find other files
+    assert!(!result.contains("README.md"), "Should not contain README.md");
+    assert!(!result.contains(".rs"), "Should not contain .rs files");
+}
+
+#[tokio::test]
+async fn test_glob_filter_ls_shows_filtered_dirs() {
+    // Only include files in ver-stub directory
+    let app = create_test_app_code_with_glob(vec!["ver-stub/**".to_string()]);
+
+    let result = app.ls(None).await.expect("ls failed");
+
+    // Root ls should only show ver-stub/ since other dirs are empty after filtering
+    assert!(result.contains("ver-stub/"), "Should show ver-stub/");
+
+    // Other directories should not appear (they have no matching files)
+    assert!(
+        !result.contains("ver-stub-build/"),
+        "Should not show ver-stub-build/"
+    );
 }

@@ -39,10 +39,13 @@ conf-extra = "0.1"
 displaydoc = "0.2"
 dotenvy = "0.15"
 futures-util = "0.3"
+globset = "0.4"
 http = "1"
 http-body = "1"
 http-body-util = "0.1"
 humantime = "2"
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.18", default-features = false, features = ["http-listener"] }
 hyper = { version = "1.7", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio", "server", "server-auto"] }
 jsonrpsee = { version = "0.26", features = ["macros", "async-client"] }

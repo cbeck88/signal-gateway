@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use chrono::Utc;
 use conf::{Conf, Subcommands};
 use futures_util::FutureExt;
+use metrics::counter;
 use prometheus_http_client::{AlertStatus, ExtractLabels};
 use std::{
     fmt::Write,
@@ -30,6 +31,12 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
+
+// Metric names
+const METRIC_LOG_MESSAGES: &str = "gateway_log_messages_total";
+const METRIC_SIGNAL_RECEIVED: &str = "gateway_signal_messages_received_total";
+const METRIC_SIGNAL_SENT: &str = "gateway_signal_messages_sent_total";
+const METRIC_ALERTS: &str = "gateway_alerts_total";
 
 mod signal_trust_set;
 pub use signal_trust_set::SignalTrustSet;
@@ -502,6 +509,7 @@ impl Gateway {
                             message: message.clone(),
                             attachments,
                         }.send(signal_cli).await?;
+                        counter!(METRIC_SIGNAL_SENT, "type" => "alert").increment(1);
 
                         if let Some(assistant) = self.assistant.get() {
                             assistant.record_message(SentBy::System, &message, Utc::now().timestamp_millis() as u64);
@@ -523,6 +531,7 @@ impl Gateway {
                             return Err(RpcClientError::ParseError(err));
                         }
                         Some(Ok(msg)) => {
+                            counter!(METRIC_SIGNAL_RECEIVED).increment(1);
                             //info!("Signal Rx: {msg:?}");
                             let Some(data_message) = &msg.envelope.data_message else {
                                 debug!("Ignoring message which was not a data message: {msg:?}");
@@ -576,6 +585,7 @@ impl Gateway {
                                 message: sourced.resp.text.clone(),
                                 attachments,
                             }.send(signal_cli).await?;
+                            counter!(METRIC_SIGNAL_SENT, "type" => "response").increment(1);
 
                             if let Some(assistant) = self.assistant.get() {
                                 assistant.record_message(sourced.source, &sourced.resp.text, Utc::now().timestamp_millis() as u64);
@@ -840,6 +850,8 @@ impl Gateway {
 
     /// Handle a POST body from alertmanager
     pub async fn handle_alertmanager_post(&self, alert_msg: AlertPost) -> Result<(), &'static str> {
+        counter!(METRIC_ALERTS).increment(alert_msg.alerts.len() as u64);
+
         let text = self
             .format_alert_text(&alert_msg)
             .unwrap_or_else(|err| format!("error formatting alert text: {err}:\n{alert_msg:#?}"));
@@ -928,6 +940,8 @@ impl Gateway {
 
     /// Process an incoming log message, buffering it and potentially triggering an alert.
     pub async fn handle_log_message(&self, log_msg: impl Into<LogMessage>) {
+        counter!(METRIC_LOG_MESSAGES).increment(1);
+
         let mut log_msg = log_msg.into();
         if let Some(n_fn) = self.path_normalization_fn.as_ref()
             && let Some(file) = log_msg.file.as_ref()

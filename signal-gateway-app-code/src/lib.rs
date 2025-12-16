@@ -5,6 +5,7 @@
 
 use async_trait::async_trait;
 use flate2::read::GzDecoder;
+use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::Regex;
 use serde::Deserialize;
 use signal_gateway_assistant::{Tool, ToolExecutor, ToolResult};
@@ -62,6 +63,15 @@ pub struct AppCodeConfig {
     /// Path to file containing the GitHub personal access token.
     /// Optional for public repositories (unauthenticated access has lower rate limits).
     pub token_file: Option<PathBuf>,
+    /// Glob patterns to filter which files are included from the tarball.
+    /// If non-empty, only files matching at least one pattern are kept.
+    /// Uses gitignore-style glob syntax (e.g., "*.rs", "src/**/*.rs").
+    #[serde(default)]
+    pub glob: Vec<String>,
+    /// Include files that aren't valid UTF-8 (using lossy conversion).
+    /// By default (false), non-UTF-8 files are skipped entirely.
+    #[serde(default)]
+    pub include_non_utf8: bool,
 }
 
 /// A file stored in memory from the tarball.
@@ -94,6 +104,7 @@ pub type ShaCallback = Arc<
 pub struct AppCode {
     config: AppCodeConfig,
     token: Option<String>,
+    glob_filter: Option<GlobSet>,
     get_sha: ShaCallback,
     client: reqwest::Client,
     cache: Mutex<Option<CachedTarball>>,
@@ -111,9 +122,26 @@ impl AppCode {
             .map(|path| std::fs::read_to_string(path).map(|s| s.trim().to_string()))
             .transpose()?;
 
+        // Compile glob patterns if any are specified
+        let glob_filter = if config.glob.is_empty() {
+            None
+        } else {
+            let mut builder = GlobSetBuilder::new();
+            for pattern in &config.glob {
+                let glob = Glob::new(pattern).map_err(|e| {
+                    std::io::Error::other(format!("invalid glob pattern '{}': {}", pattern, e))
+                })?;
+                builder.add(glob);
+            }
+            Some(builder.build().map_err(|e| {
+                std::io::Error::other(format!("failed to build glob set: {}", e))
+            })?)
+        };
+
         Ok(Self {
             config,
             token,
+            glob_filter,
             get_sha,
             client: reqwest::Client::new(),
             cache: Mutex::new(None),
@@ -254,14 +282,32 @@ impl AppCode {
                 continue;
             }
 
+            // Apply glob filter if configured
+            if let Some(ref glob_filter) = self.glob_filter {
+                if !glob_filter.is_match(&path) {
+                    continue;
+                }
+            }
+
             // Read file contents
             let mut contents = Vec::new();
             if entry.read_to_end(&mut contents).is_err() {
                 continue; // Skip files we can't read
             }
 
-            // Convert to string (lossy)
-            let content = String::from_utf8_lossy(&contents).to_string();
+            // Convert to string, handling non-UTF-8 based on config
+            let content = match String::from_utf8(contents) {
+                Ok(s) => s,
+                Err(e) => {
+                    if self.config.include_non_utf8 {
+                        // Use lossy conversion if configured to include non-UTF-8
+                        String::from_utf8_lossy(e.as_bytes()).into_owned()
+                    } else {
+                        // Skip non-UTF-8 files by default
+                        continue;
+                    }
+                }
+            };
 
             files.insert(path, CachedFile { content });
         }

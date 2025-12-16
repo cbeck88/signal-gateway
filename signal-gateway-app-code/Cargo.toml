@@ -11,6 +11,7 @@ signal-gateway-assistant = { workspace = true }
 
 async-trait = { workspace = true }
 flate2 = { workspace = true }
+globset = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true, features = ["rustls-tls"] }
 serde = { workspace = true }

@@ -3,6 +3,7 @@
 #![deny(missing_docs)]
 
 use conf::Conf;
+use metrics_exporter_prometheus::PrometheusBuilder;
 use signal_gateway::{CommandRouter, Gateway, GatewayConfig, Handling};
 use signal_gateway_app_code::AppCodeTools;
 use signal_gateway_assistant_claude::{ClaudeAssistant, ClaudeConfig};
@@ -38,6 +39,9 @@ pub struct Config {
     /// Socket to listen for HTTP requests (GET /health, POST /alert)
     #[conf(long, env, default_value = "0.0.0.0:8000")]
     http_listen_addr: SocketAddr,
+    /// Socket to listen for Prometheus metrics scraping.
+    #[conf(long, env, default_value = "0.0.0.0:9000")]
+    metrics_listen_addr: SocketAddr,
     #[conf(flatten, prefix)]
     syslog: Option<SyslogConfig>,
     #[conf(flatten, prefix)]
@@ -110,6 +114,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     if config.dry_run {
         return Ok(());
     }
+
+    // Initialize Prometheus metrics exporter
+    PrometheusBuilder::new()
+        .with_http_listener(config.metrics_listen_addr)
+        .install()
+        .expect("failed to install Prometheus metrics recorder");
+    info!(
+        "Prometheus metrics endpoint at http://{}/metrics",
+        config.metrics_listen_addr
+    );
 
     let token = CancellationToken::new();
 
