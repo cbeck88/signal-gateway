@@ -11,8 +11,9 @@ signal-gateway = { workspace = true }
 
 chrono = { workspace = true }
 conf = { workspace = true }
+globset = "0.4"
 serde = { workspace = true }
 serde_json = { workspace = true }
 syslog_rfc5424 = { workspace = true }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
 tracing = { workspace = true }

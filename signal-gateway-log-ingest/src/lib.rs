@@ -5,6 +5,7 @@
 //! - Syslog (RFC 5424) over UDP and TCP
 
 pub mod json;
+pub mod path_prefix;
 pub mod syslog;
 
 pub use json::JsonConfig;
