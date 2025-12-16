@@ -253,6 +253,8 @@ pub struct Gateway {
     assistant: OnceLock<AssistantAgent>,
     /// Additional tool executors added via the builder.
     extra_tool_executors: Vec<Arc<dyn ToolExecutor>>,
+    /// Path normalization function
+    path_normalization_fn: Option<Box<dyn Fn(&str) -> &str + Send + Sync>>,
 }
 
 /// Type alias for the assistant factory function.
@@ -266,6 +268,7 @@ pub struct GatewayBuilder {
     command_router: Option<CommandRouter>,
     extra_tool_executors: Vec<Arc<dyn ToolExecutor>>,
     assistant_factory: Option<AssistantFactory>,
+    path_normalization_fn: Option<Box<dyn Fn(&str) -> &str + Send + Sync>>,
 }
 
 impl GatewayBuilder {
@@ -277,6 +280,7 @@ impl GatewayBuilder {
             command_router: None,
             extra_tool_executors: Vec::new(),
             assistant_factory: None,
+            path_normalization_fn: None,
         }
     }
 
@@ -313,6 +317,15 @@ impl GatewayBuilder {
         self
     }
 
+    /// Set a path normalization function for the gateway, for source location of logs
+    pub fn with_path_normalization_fn<F>(mut self, normalize_fn: F) -> Self
+    where
+        F: Fn(&str) -> &str + Send + Sync + 'static,
+    {
+        self.path_normalization_fn = Some(Box::new(normalize_fn));
+        self
+    }
+
     /// Build the gateway.
     pub async fn build(self) -> Arc<Gateway> {
         Gateway::new_internal(
@@ -321,6 +334,7 @@ impl GatewayBuilder {
             self.command_router.unwrap_or_default(),
             self.extra_tool_executors,
             self.assistant_factory,
+            self.path_normalization_fn,
         )
         .await
     }
@@ -339,6 +353,7 @@ impl Gateway {
         command_router: CommandRouter,
         extra_tool_executors: Vec<Arc<dyn ToolExecutor>>,
         assistant_factory: Option<AssistantFactory>,
+        path_normalization_fn: Option<Box<dyn Fn(&str) -> &str + Send + Sync>>,
     ) -> Arc<Self> {
         let child_token = token.child_token();
         let (signal_alert_mq_tx, signal_alert_mq_rx) = unbounded_channel();
@@ -362,6 +377,7 @@ impl Gateway {
             command_router,
             assistant: OnceLock::new(),
             extra_tool_executors,
+            path_normalization_fn,
         });
 
         // Initialize the assistant agent using the factory if one was provided
@@ -912,9 +928,16 @@ impl Gateway {
 
     /// Process an incoming log message, buffering it and potentially triggering an alert.
     pub async fn handle_log_message(&self, log_msg: impl Into<LogMessage>) {
-        let log_msg = log_msg.into();
-        let origin = Origin::from(&log_msg);
-        self.log_handler.handle_log_message(log_msg, origin).await;
+        let mut log_msg = log_msg.into();
+        if let Some(n_fn) = self.path_normalization_fn.as_ref()
+            && let Some(file) = log_msg.file.as_ref()
+        {
+            let normalized = (n_fn)(file);
+            if normalized.len() < file.len() {
+                log_msg.file = Some(normalized.to_owned().into_boxed_str());
+            }
+        }
+        self.log_handler.handle_log_message(log_msg).await;
     }
 }
 

@@ -78,11 +78,7 @@ impl LogFormatConfig {
 
             if self.format_source_location {
                 if let Some(file) = log_msg.file.as_ref() {
-                    // Strip /home/{username}/ prefix if present
-                    let trimmed = strip_prefix_and_one_slash(file, "/home/");
-                    // Strip .cargo/registry/src/{hash}/ if present
-                    let trimmed = strip_prefix_and_one_slash(trimmed, ".cargo/registry/src/");
-                    write!(writer, "{trimmed}:")?;
+                    write!(writer, "{file}:")?;
                     if let Some(line) = log_msg.line.as_ref() {
                         write!(writer, "{line}")?;
                     } else {
@@ -97,19 +93,6 @@ impl LogFormatConfig {
         }
 
         writeln!(writer, ": {}", log_msg.msg)
-    }
-}
-
-// Strip a prefix, then find the first remaining slash and skip up to that as well.
-fn strip_prefix_and_one_slash<'a>(target: &'a str, prefix: &str) -> &'a str {
-    let Some(target) = target.strip_prefix(prefix) else {
-        return target;
-    };
-
-    if let Some((_, after)) = target.split_once('/') {
-        after
-    } else {
-        target
     }
 }
 

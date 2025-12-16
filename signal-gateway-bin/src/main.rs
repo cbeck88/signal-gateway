@@ -21,7 +21,7 @@ use app_code::AppCodeConfigExt;
 mod listen_http;
 use listen_http::start_http_task;
 
-use signal_gateway_log_ingest::{JsonConfig, SyslogConfig};
+use signal_gateway_log_ingest::{JsonConfig, StripPathPrefixes, SyslogConfig};
 
 /// Top-level configuration for signal-gateway.
 #[derive(Conf, Debug)]
@@ -53,6 +53,8 @@ pub struct Config {
     claude: Option<ClaudeConfig>,
     #[conf(flatten, serde(flatten))]
     gateway: GatewayConfig,
+    #[conf(long, env, value_parser = serde_json::from_str, default_value = "[\"/home/*/\", \".cargo/registry/src/*/\"]")]
+    remove_path_prefixes: Vec<String>,
 }
 
 fn init_logging() {
@@ -111,26 +113,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = CancellationToken::new();
 
     // Build the command router
-    let mut router_builder = CommandRouter::builder()
-        .route("--help", Handling::Help)
-        .route("-h", Handling::Help);
+    let command_router = {
+        let mut router_builder = CommandRouter::builder()
+            .route("--help", Handling::Help)
+            .route("-h", Handling::Help);
 
-    // Add admin HTTP handler with its configured prefix
-    if let Some(admin_http) = config.admin_http {
-        let prefix = admin_http.command_prefix.clone();
-        let handler = admin_http.into_handler();
-        router_builder = router_builder.route(prefix, Handling::Custom(handler));
-    }
+        // Add admin HTTP handler with its configured prefix
+        if let Some(admin_http) = config.admin_http {
+            let prefix = admin_http.command_prefix.clone();
+            let handler = admin_http.into_handler();
+            router_builder = router_builder.route(prefix, Handling::Custom(handler));
+        }
 
-    // Add gateway commands for "/" prefix
-    router_builder = router_builder.route("/", Handling::GatewayCommand);
+        // Add gateway commands for "/" prefix
+        router_builder = router_builder.route("/", Handling::GatewayCommand);
 
-    // Add Claude as default handler if configured
-    if config.claude.is_some() {
-        router_builder = router_builder.route("", Handling::Claude);
-    }
-
-    let command_router = router_builder.build();
+        // Add Claude as default handler if configured
+        if config.claude.is_some() {
+            router_builder = router_builder.route("", Handling::Claude);
+        }
+        router_builder.build()
+    };
 
     // Build AppCode tools if configured
     let app_code_tools = if !config.app_code.is_empty() {
@@ -150,25 +153,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         None
     };
 
-    let mut gateway_builder = Gateway::builder(config.gateway)
-        .with_cancellation_token(token.clone())
-        .with_command_router(command_router);
+    // Build path prefix stripper
+    let path_stripper =
+        StripPathPrefixes::new(config.remove_path_prefixes.iter().map(String::as_str));
 
-    if let Some(tools) = app_code_tools {
-        gateway_builder = gateway_builder.with_tools(tools);
-    }
+    let gateway = {
+        let mut gateway_builder = Gateway::builder(config.gateway)
+            .with_cancellation_token(token.clone())
+            .with_command_router(command_router)
+            .with_path_normalization_fn(move |p| path_stripper.strip_path_prefix(p));
 
-    // Add Claude assistant if configured
-    if let Some(claude_config) = config.claude {
-        gateway_builder = gateway_builder.with_assistant(move |tool_executor| {
-            Box::new(
-                ClaudeAssistant::new(claude_config, tool_executor)
-                    .expect("Failed to initialize Claude assistant"),
-            )
-        });
-    }
+        if let Some(tools) = app_code_tools {
+            gateway_builder = gateway_builder.with_tools(tools);
+        }
 
-    let gateway = gateway_builder.build().await;
+        // Add Claude assistant if configured
+        if let Some(claude_config) = config.claude {
+            gateway_builder = gateway_builder.with_assistant(move |tool_executor| {
+                Box::new(
+                    ClaudeAssistant::new(claude_config, tool_executor)
+                        .expect("Failed to initialize Claude assistant"),
+                )
+            });
+        }
+
+        gateway_builder.build().await
+    };
 
     let listener = TcpListener::bind(config.http_listen_addr).await.unwrap();
     info!("Listening for http on {}", config.http_listen_addr);

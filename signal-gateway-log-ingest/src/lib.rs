@@ -9,4 +9,5 @@ pub mod path_prefix;
 pub mod syslog;
 
 pub use json::JsonConfig;
+pub use path_prefix::StripPathPrefixes;
 pub use syslog::SyslogConfig;

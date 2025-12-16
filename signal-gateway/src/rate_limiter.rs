@@ -713,7 +713,7 @@ mod tests {
 
     #[test]
     fn source_location_rate_limiter_cleanup() {
-        // Cleanup triggers when len >= 2 * last_cleanup_size (starts at 8, so triggers at 16)
+        // Cleanup triggers when len >= 2 * last_cleanup_size (starts at 0, triggers at 2, 4, 8, 16...)
         let threshold = RateThreshold {
             times: 1,
             duration: Duration::from_secs(600),

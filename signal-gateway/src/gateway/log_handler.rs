@@ -167,7 +167,8 @@ impl LogHandler {
     }
 
     /// Consume a new log message from the given origin
-    pub async fn handle_log_message(&self, log_msg: LogMessage, origin: Origin) {
+    pub async fn handle_log_message(&self, log_msg: LogMessage) {
+        let origin = Origin::from(&log_msg);
         let rate_limit_result = self.check_rate_limiters(&log_msg, &origin).await;
 
         if let Err(reason) = &rate_limit_result {

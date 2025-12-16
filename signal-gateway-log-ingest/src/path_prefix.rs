@@ -1,7 +1,39 @@
 use globset::{Glob, GlobMatcher};
 
+pub struct StripPathPrefixes {
+    finders: Vec<Finder>,
+}
+
+impl StripPathPrefixes {
+    pub fn new<'a, T>(iter: T) -> Self
+    where
+        T: Iterator<Item = &'a str>,
+    {
+        Self {
+            finders: iter.map(Finder::new).collect(),
+        }
+    }
+
+    pub fn strip_path_prefix<'a>(&self, mut target: &'a str) -> &'a str {
+        for f in self.finders.iter() {
+            target = f.strip_path_prefix(target);
+        }
+        target
+    }
+}
+
+impl<A: AsRef<str>> FromIterator<A> for StripPathPrefixes {
+    fn from_iter<T>(iter: T) -> Self
+    where
+        T: IntoIterator<Item = A>,
+    {
+        let finders = iter.into_iter().map(|s| Finder::new(s.as_ref())).collect();
+        Self { finders }
+    }
+}
+
 /// Trait for object which can strip prefixes from a path
-pub trait PathPrefixFinder {
+trait PathPrefixFinder {
     /// Find the largest index such that target[..idx] matches to glob
     fn find_path_prefix(&self, target: &str) -> Option<usize>;
     /// Strip a glob pattern from a target path
@@ -15,6 +47,7 @@ pub trait PathPrefixFinder {
 }
 
 /// Matches a glob pattern to a path and strips matching prefix
+#[derive(Clone)]
 pub struct Finder {
     inner: FinderInner,
 }
@@ -34,6 +67,7 @@ impl PathPrefixFinder for Finder {
     }
 }
 
+#[derive(Clone)]
 enum FinderInner {
     LeadingDoubleStar {
         rneedle: Box<str>,
@@ -50,6 +84,7 @@ enum FinderInner {
     },
 }
 
+#[derive(Clone)]
 struct GlobSegment {
     prefix: Box<str>,
     matcher: GlobMatcher,
