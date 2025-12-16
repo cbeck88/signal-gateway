@@ -53,6 +53,7 @@ pub struct Config {
     claude: Option<ClaudeConfig>,
     #[conf(flatten, serde(flatten))]
     gateway: GatewayConfig,
+    /// When ingesting logs, if the file begins with any of these glob prefixes, remove the glob prefix
     #[conf(long, env, value_parser = serde_json::from_str, default_value = "[\"/home/*/\", \".cargo/registry/src/*/\"]")]
     remove_path_prefixes: Vec<String>,
 }
