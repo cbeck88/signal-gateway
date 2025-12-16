@@ -10,7 +10,10 @@ use tokio_util::bytes::Buf;
 use tracing::{error, info, warn};
 
 /// Start http listening task
-pub fn start_http_task(listener: TcpListener, gateway: Arc<Gateway>) -> tokio::task::JoinHandle<()> {
+pub fn start_http_task(
+    listener: TcpListener,
+    gateway: Arc<Gateway>,
+) -> tokio::task::JoinHandle<()> {
     // Loop waiting for http incoming connections, and pass them to gateway
     tokio::task::spawn(async move {
         loop {
@@ -133,4 +136,3 @@ where
         )),
     }
 }
-

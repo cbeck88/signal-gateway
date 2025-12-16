@@ -45,13 +45,14 @@ enum FinderInner {
         right_child: Box<Self>,
     },
     NoDoubleStar {
-        pattern_segments: Vec<PatSegment>,
+        globs: Vec<GlobSegment>,
+        last: Box<str>,
     },
 }
 
-struct PatSegment {
-    segment: Box<str>,
-    matcher: Option<GlobMatcher>,
+struct GlobSegment {
+    prefix: Box<str>,
+    matcher: GlobMatcher,
 }
 
 impl FinderInner {
@@ -96,20 +97,36 @@ impl FinderInner {
                 }
             }
         } else {
-            let pattern_segments = pattern
-                .split('/')
-                .map(|p| {
-                    let matcher = if p.find(META).is_some() {
-                        Some(Glob::new(p).unwrap().compile_matcher())
-                    } else {
-                        None
-                    };
-                    let segment = p.to_owned().into_boxed_str();
-                    PatSegment { segment, matcher }
-                })
-                .collect::<Vec<_>>();
+            let mut globs = vec![];
+            let mut working = String::new();
 
-            Self::NoDoubleStar { pattern_segments }
+            // Split pattern in `/` separated segments, then see which ones actually
+            // have metacharacters.
+            // The final structure will be literal - glob - literal - glob - literal
+            // The current "literal" is buffered into "working", and is allowed to contain /,
+            // while glob can never contain /.
+            // Each time the segment doesn't contain meta, we add it to working.
+            // If it does contain meta, then the entire working buffer becomes
+            // the prefix for this glob, and the current segment is compiled as a blob.
+            // At the end, any remaining working buffer becomes the "last" literal.
+            let mut first = true;
+            for segment in pattern.split('/') {
+                if first {
+                    first = false;
+                } else {
+                    working.push('/');
+                }
+                if segment.find(META).is_some() {
+                    let prefix = core::mem::take(&mut working).into_boxed_str();
+                    let matcher = Glob::new(segment).unwrap().compile_matcher();
+                    globs.push(GlobSegment { prefix, matcher });
+                } else {
+                    working += segment;
+                }
+            }
+            let last = working.into_boxed_str();
+
+            Self::NoDoubleStar { globs, last }
         }
     }
 
@@ -149,70 +166,46 @@ impl FinderInner {
                 }
                 None
             }
-            Self::NoDoubleStar { pattern_segments } => {
-                let mut target_slashes = target.match_indices('/').map(|(idx, _)| idx);
-                let mut prev_target_slash = None;
-
-                // We're sort of doing a zip over pattern_segments.iter() and target_slashes.
-                // But it can't be exactly a zip, we have to do it kind of manually to get correct
-                // results.
-                debug_assert!(!pattern_segments.is_empty());
-                let mut pat_iter = pattern_segments.iter();
-                while let Some(PatSegment { segment, matcher }) = pat_iter.next() {
-                    // Compute start of this segment, excluding '/'
-                    // t becomes what we would get from target.split('/')
-                    let t_seg_start = prev_target_slash.map(|i| i + 1).unwrap_or(0);
-                    let t = if let Some(slash_idx) = target_slashes.next() {
-                        prev_target_slash = Some(slash_idx);
-                        &target[t_seg_start..slash_idx]
-                    } else {
-                        prev_target_slash = None;
-                        &target[t_seg_start..]
-                    };
-                    // Try to match this pattern segment against t.
-                    // If there is a matcher, use that
-                    if let Some(matcher) = matcher.as_ref() {
-                        if !matcher.is_match(t) {
+            Self::NoDoubleStar { globs, last } => {
+                let mut target_remaining = target;
+                // As long as there are glob segments, strip off their prefix (or hard fail)
+                // and try to match the glob on the remainder, always requiring to match up
+                // to next / if there is one.
+                for GlobSegment { prefix, matcher } in globs.iter() {
+                    debug_assert!(prefix.is_empty() || prefix.ends_with('/'));
+                    let rem = target_remaining.strip_prefix(&**prefix)?;
+                    if let Some(slash_idx) = rem.find('/') {
+                        if !matcher.is_match(&rem[..slash_idx]) {
                             return None;
                         }
-                    } else if !segment.is_empty() {
-                        // If the segment is non-empty, but the matcher is empty,
-                        // it means that we didn't bother compiling the matcher
-                        // becuase there were no metacharacters, and we can just
-                        // test for equality directly.
-                        if *t != **segment {
+                        target_remaining = &rem[slash_idx..];
+                    } else {
+                        if !matcher.is_match(rem) {
                             return None;
                         }
-                    } else {
-                        // The case where pattern segment is empty requires special handling,
-                        // because it may indicate a trailing slash, and then we don't have to match
-                        // the next segment, we just match up to the slash.
-                        if !t.is_empty() {
-                            return if pat_iter.next().is_some() {
-                                None
-                            } else {
-                                Some(t_seg_start)
-                            };
-                        }
-                    }
-                    // Zip structure: Check if target slashes just became exhausted
-                    if prev_target_slash.is_none() {
-                        return if pat_iter.next().is_some() {
-                            // There's still some pattern remaining that we can't match
-                            None
-                        } else {
-                            // They ran out at the same time, so this is a full match
-                            Some(target.len())
-                        };
+                        target_remaining = "";
                     }
                 }
-                // Pattern is exhausted before target is, so this is a partial match
-                // The amount we consumed is right up to what would have been
-                // prev_target_slash in the next iteration.
-                // Note: prev_target_slash is not None in this path, because
-                // we always enter the loop at least once -- split on an empty string
-                // still produces an empty string, and so pattern_segments is not empty.
-                prev_target_slash
+                // If there is a last literal, then strip it off.
+                //
+                // There is an edge-case -- the last literal is not allowed
+                // to partially match a path component at the end.
+                //
+                // If last doesn't end with '/', and the remaining unmatched stuff is non-empty
+                // and doesn't start with '/', then we know that we broke a path component in the middle,
+                // so we should return None. Otherwise we compute the length of what we matched
+                // by subtracting remaining string length from starting string length.
+                if !last.is_empty() {
+                    target_remaining = target_remaining.strip_prefix(&**last)?;
+                    if !target_remaining.is_empty()
+                        && !target_remaining.starts_with('/')
+                        && !last.ends_with('/')
+                    {
+                        // not allowed to partial-match a path component at the end
+                        return None;
+                    }
+                }
+                Some(target.len() - target_remaining.len())
             }
         }
     }
@@ -237,7 +230,8 @@ mod tests {
 
     #[test]
     fn test_match_simple_glob() {
-        assert!(!match_simple_glob("", "foo"));
+        // By convention, we say that empty pattern matches everything
+        assert!(match_simple_glob("", "foo"));
         assert!(!match_simple_glob("f", "foo"));
         assert!(!match_simple_glob("o", "foo"));
         assert!(!match_simple_glob("fo", "foo"));
@@ -424,6 +418,17 @@ mod tests {
                 finder.strip_path_prefix("/target/target/a/target/"),
                 "target/"
             );
+        }
+
+        {
+            let finder = Finder::new("*a/**/b*");
+            assert_eq!(finder.strip_path_prefix("a/b"), "a/b");
+            assert_eq!(finder.strip_path_prefix("a//b"), "");
+            assert_eq!(finder.strip_path_prefix("a/c/b"), "");
+            assert_eq!(finder.strip_path_prefix("ca/c/b"), "");
+            assert_eq!(finder.strip_path_prefix("ca/c/bc"), "");
+            assert_eq!(finder.strip_path_prefix("ca/c/dbc"), "ca/c/dbc");
+            assert_eq!(finder.strip_path_prefix("ca/c/b/dbc"), "/dbc");
         }
     }
 }
