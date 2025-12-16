@@ -60,7 +60,8 @@ pub struct AppCodeConfig {
     /// GitHub repository in "owner/repo" format.
     pub github: GitHubRepo,
     /// Path to file containing the GitHub personal access token.
-    pub token_file: PathBuf,
+    /// Optional for public repositories (unauthenticated access has lower rate limits).
+    pub token_file: Option<PathBuf>,
 }
 
 /// A file stored in memory from the tarball.
@@ -92,7 +93,7 @@ pub type ShaCallback = Arc<
 /// Downloads and caches GitHub tarballs for browsing application source code.
 pub struct AppCode {
     config: AppCodeConfig,
-    token: String,
+    token: Option<String>,
     get_sha: ShaCallback,
     client: reqwest::Client,
     cache: Mutex<Option<CachedTarball>>,
@@ -104,9 +105,11 @@ impl AppCode {
     /// The `get_sha` callback is called to determine which git SHA to download.
     /// It should return `None` if the SHA is not yet known.
     pub fn new(config: AppCodeConfig, get_sha: ShaCallback) -> Result<Self, std::io::Error> {
-        let token = std::fs::read_to_string(&config.token_file)?
-            .trim()
-            .to_string();
+        let token = config
+            .token_file
+            .as_ref()
+            .map(|path| std::fs::read_to_string(path).map(|s| s.trim().to_string()))
+            .transpose()?;
 
         Ok(Self {
             config,
@@ -188,13 +191,18 @@ impl AppCode {
             self.config.github.owner, self.config.github.repo, sha
         );
 
-        let response = self
+        let mut request = self
             .client
             .get(&url)
-            .header("Authorization", format!("Bearer {}", self.token))
             .header("Accept", "application/vnd.github+json")
             .header("User-Agent", "signal-gateway")
-            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("X-GitHub-Api-Version", "2022-11-28");
+
+        if let Some(token) = &self.token {
+            request = request.header("Authorization", format!("Bearer {}", token));
+        }
+
+        let response = request
             .send()
             .await
             .map_err(|e| format!("HTTP request failed: {e}"))?;
