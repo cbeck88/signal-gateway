@@ -1,16 +1,11 @@
 //! Gateway for bridging alerts and logs with Signal messenger.
 
-#[cfg(unix)]
-use crate::signal_jsonrpc::connect_ipc;
 use crate::{
     alertmanager::AlertPost,
     assistant::{AssistantAgent, SentBy, Tool, ToolExecutor, ToolResult},
     log_message::{LogMessage, Origin},
     message_handler::{AdminMessage, AdminMessageResponse, Context, MessageHandlerResult},
     prometheus::{Prometheus, PrometheusConfig},
-    signal_jsonrpc::{
-        Envelope, MessageTarget, RpcClient, RpcClientError, SignalMessage, connect_tcp,
-    },
 };
 use async_trait::async_trait;
 use chrono::Utc;
@@ -18,6 +13,11 @@ use conf::{Conf, Subcommands};
 use futures_util::FutureExt;
 use metrics::counter;
 use prometheus_http_client::{AlertStatus, ExtractLabels};
+#[cfg(unix)]
+use signal_cli_jsonrpc_client::connect_ipc;
+use signal_cli_jsonrpc_client::{
+    Envelope, MessageTarget, RpcClient, RpcClientError, SignalMessage, connect_tcp,
+};
 use std::{
     fmt::Write,
     net::SocketAddr,
@@ -38,11 +38,9 @@ const METRIC_SIGNAL_RECEIVED: &str = "gateway_signal_messages_received_total";
 const METRIC_SIGNAL_SENT: &str = "gateway_signal_messages_sent_total";
 const METRIC_ALERTS: &str = "gateway_alerts_total";
 
-mod signal_trust_set;
-pub use signal_trust_set::SignalTrustSet;
-
 mod command_router;
 pub use command_router::{CommandRouter, CommandRouterBuilder, Handling};
+pub use signal_cli_jsonrpc_client::SignalTrustSet;
 
 mod log_buffer;
 mod log_handler;

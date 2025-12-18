@@ -4,7 +4,7 @@
 //! - Map: `{"uuid1": ["safety1", "safety2"], "uuid2": []}` - UUIDs with safety numbers
 //! - Sequence: `["uuid1", "uuid2"]` - UUIDs with no safety numbers (simpler)
 
-use crate::signal_jsonrpc::{Envelope, Identity, RpcClient};
+use crate::{Envelope, Identity, RpcClient};
 use serde::{
     Deserialize, Deserializer,
     de::{MapAccess, SeqAccess, Visitor},

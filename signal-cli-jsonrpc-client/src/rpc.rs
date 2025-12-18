@@ -468,7 +468,7 @@ pub struct Identity {
 pub async fn connect_tcp(
     tcp: impl ToSocketAddrs,
 ) -> Result<impl SubscriptionClientT, std::io::Error> {
-    let (sender, receiver) = super::transports::tcp::connect(tcp).await?;
+    let (sender, receiver) = crate::transports::tcp::connect(tcp).await?;
 
     Ok(ClientBuilder::default().build_with_tokio(sender, receiver))
 }
@@ -478,7 +478,7 @@ pub async fn connect_tcp(
 pub async fn connect_ipc(
     path: impl AsRef<std::path::Path>,
 ) -> Result<impl SubscriptionClientT, std::io::Error> {
-    let (sender, receiver) = super::transports::ipc::connect(path).await?;
+    let (sender, receiver) = crate::transports::ipc::connect(path).await?;
 
     Ok(ClientBuilder::default().build_with_tokio(sender, receiver))
 }

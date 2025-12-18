@@ -1,0 +1,19 @@
+[package]
+name = "signal-cli-jsonrpc-client"
+version = "0.1.0"
+edition.workspace = true
+description = "JSON-RPC client for signal-cli daemon"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[dependencies]
+futures-util = { workspace = true }
+jsonrpsee = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tokio-util = { workspace = true }
+tracing = { workspace = true }

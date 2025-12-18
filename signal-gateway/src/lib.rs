@@ -19,8 +19,6 @@ pub(crate) mod log_format;
 pub(crate) mod log_message;
 pub(crate) mod prometheus;
 pub(crate) mod rate_limiter;
-pub(crate) mod signal_jsonrpc;
-pub(crate) mod transports;
 
 pub use gateway::{CommandRouter, CommandRouterBuilder, Gateway, GatewayConfig, Handling};
 pub use limiter_sequence::Limit;

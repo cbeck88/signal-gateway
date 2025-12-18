@@ -13,6 +13,7 @@ rustls-tls = ["prometheus-http-client/rustls-tls", "reqwest/rustls-tls"]
 
 [dependencies]
 prometheus-http-client = { workspace = true, default-features = false }
+signal-cli-jsonrpc-client = { workspace = true }
 signal-gateway-assistant = { workspace = true }
 
 async-trait = { workspace = true }
@@ -22,7 +23,6 @@ conf-extra = { workspace = true }
 displaydoc = { workspace = true }
 futures-util = { workspace = true }
 humantime = { workspace = true }
-jsonrpsee = { workspace = true }
 metrics = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
