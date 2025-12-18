@@ -1,5 +1,12 @@
 # signal-cli-jsonrpc-client
 
+[![Crates.io](https://img.shields.io/crates/v/signal-cli-jsonrpc-client?style=flat-square)](https://crates.io/crates/signal-cli-jsonrpc-client)
+[![Crates.io](https://img.shields.io/crates/d/signal-cli-jsonrpc-client?style=flat-square)](https://crates.io/crates/signal-cli-jsonrpc-client)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](LICENSE-APACHE)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE-MIT)
+
+[API Docs](https://docs.rs/signal-cli-jsonrpc-client/latest/signal_cli_jsonrpc_client/)
+
 A Rust JSON-RPC client for [signal-cli](https://github.com/AsamK/signal-cli) daemon.
 
 ## Origin

@@ -35,11 +35,11 @@ assigning_clones = "allow"
 result_large_err = "allow"
 
 [workspace.dependencies]
-prometheus-http-client = { path = "prometheus-http-client", default-features = false }
-signal-cli-jsonrpc-client = { path = "signal-cli-jsonrpc-client" }
-signal-gateway = { path = "signal-gateway", default-features = false }
-signal-gateway-assistant = { path = "signal-gateway-assistant" }
-signal-gateway-assistant-claude = { path = "signal-gateway-assistant/claude" }
+prometheus-http-client = { path = "prometheus-http-client", version = "0.1.0", default-features = false }
+signal-cli-jsonrpc-client = { path = "signal-cli-jsonrpc-client", version = "0.1.0" }
+signal-gateway = { path = "signal-gateway", version = "0.1.0", default-features = false }
+signal-gateway-assistant = { path = "signal-gateway-assistant", version = "0.1.0" }
+signal-gateway-assistant-claude = { path = "signal-gateway-assistant/claude", version = "0.1.0" }
 
 async-trait = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde", "std"] }

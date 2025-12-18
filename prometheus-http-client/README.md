@@ -1,5 +1,12 @@
 # prometheus-http-client
 
+[![Crates.io](https://img.shields.io/crates/v/prometheus-http-client?style=flat-square)](https://crates.io/crates/prometheus-http-client)
+[![Crates.io](https://img.shields.io/crates/d/prometheus-http-client?style=flat-square)](https://crates.io/crates/prometheus-http-client)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](LICENSE-APACHE)
+[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE-MIT)
+
+[API Docs](https://docs.rs/prometheus-http-client/latest/prometheus_http_client/)
+
 Makes requests to the prometheus query API. With `plot` feature, also provides
 a way to plot responses from prometheus.
 

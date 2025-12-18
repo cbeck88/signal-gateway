@@ -3,9 +3,13 @@
 An extensible monitoring tool, sending alerts via Signal messenger, and responding to requests for information
 (status, metrics values, plots) or other commands from administrators.
 
+[![Crates.io](https://img.shields.io/crates/v/signal-gateway?style=flat-square)](https://crates.io/crates/signal-gateway)
+[![Crates.io](https://img.shields.io/crates/d/signal-gateway?style=flat-square)](https://crates.io/crates/signal-gateway)
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](LICENSE-APACHE)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE-MIT)
 [![Build Status](https://img.shields.io/github/actions/workflow/status/cbeck88/signal-gateway/ci.yml?branch=master&style=flat-square)](https://github.com/cbeck88/signal-gateway/actions/workflows/ci.yml?query=branch%3Amaster)
+
+[API Docs](https://docs.rs/signal-gateway/latest/signal_gateway/)
 
 ## Overview
 
@@ -137,11 +141,11 @@ The log handler controls (not exhaustive):
 * When a log message can lead to an alert (by configuring one or more "routes")
 * Overall limits on alerting (applies to all routes)
 
-See docs for `LogHandlerConfig` for more specifics.
+See docs for [`LogHandlerConfig`](https://docs.rs/signal-gateway/latest/signal_gateway/log_handler/struct.LogHandlerConfig.html) for more specifics.
 
 High level:
 
-* A `Route` consists of an `alert_level`, a `LogFilter`, and a series of `Limit`'s.
+* A [`Route`](https://docs.rs/signal-gateway/latest/signal_gateway/log_handler/struct.Route.html) consists of an `alert_level`, a [`LogFilter`](https://docs.rs/signal-gateway/latest/signal_gateway/log_handler/struct.LogFilter.html), and a series of [`Limit`](https://docs.rs/signal-gateway/latest/signal_gateway/log_handler/struct.Limit.html)'s.
   If a message is at the alert level or higher, and it passes the filter, then we test
   each `Limit` in the route.
   * A `LogFilter` is a test against the fields of the log message. It is stateless.
@@ -190,7 +194,7 @@ limits = [
 ]
 ```
 
-For a complete list of `LogFilter` keys, see docs for `struct LogFilter`.
+For a complete list of `LogFilter` keys, see docs for [`LogFilter`](https://docs.rs/signal-gateway/latest/signal_gateway/log_handler/struct.LogFilter.html).
 
 ### Claude
 
