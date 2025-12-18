@@ -59,10 +59,10 @@ pub enum Source {
     },
 }
 
-/// Configuration for an application's source code access.
+/// Configuration for a repository's source code access.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 pub struct CodeToolConfig {
-    /// Name of the application (used to identify it in tool calls).
+    /// Name of the repository (used to identify it in tool calls).
     pub name: String,
     /// Source of the repository code.
     #[serde(flatten)]

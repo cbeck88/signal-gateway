@@ -1,6 +1,6 @@
-//! Application source code browsing via GitHub tarball downloads.
+//! Repository source code browsing via GitHub tarball downloads.
 //!
-//! This crate provides tools for browsing application source code by downloading
+//! This crate provides tools for browsing repository source code by downloading
 //! tarballs from GitHub and caching them in memory.
 
 mod cached;
@@ -40,9 +40,9 @@ enum ResolvedSource {
     },
 }
 
-/// Application source code browser.
+/// Repository source code browser.
 ///
-/// Downloads and caches GitHub tarballs for browsing application source code.
+/// Downloads and caches GitHub tarballs for browsing repository source code.
 pub struct CodeTool {
     config: CodeToolConfig,
     source: ResolvedSource,
@@ -110,7 +110,7 @@ impl CodeTool {
         })
     }
 
-    /// Get the application name.
+    /// Get the repository name.
     pub fn name(&self) -> &str {
         &self.config.name
     }
@@ -477,56 +477,56 @@ impl CodeTool {
     }
 }
 
-/// Tool executor for multiple application source code browsers.
+/// Tool executor for multiple repository code browsers.
 pub struct CodeToolTools {
-    apps: Vec<CodeTool>,
+    repos: Vec<CodeTool>,
 }
 
 impl CodeToolTools {
     /// Create a new CodeToolTools instance.
-    pub fn new(apps: Vec<CodeTool>) -> Self {
-        Self { apps }
+    pub fn new(repos: Vec<CodeTool>) -> Self {
+        Self { repos }
     }
 
-    /// Find an app by name.
-    fn find_app(&self, name: &str) -> Option<&CodeTool> {
-        self.apps.iter().find(|app| app.name() == name)
+    /// Find a repo by name.
+    fn find_repo(&self, name: &str) -> Option<&CodeTool> {
+        self.repos.iter().find(|repo| repo.name() == name)
     }
 
-    /// Get list of app names for error messages.
-    fn app_names(&self) -> String {
-        self.apps
+    /// Get list of repo names for error messages.
+    fn repo_names(&self) -> String {
+        self.repos
             .iter()
-            .map(|a| a.name())
+            .map(|r| r.name())
             .collect::<Vec<_>>()
             .join(", ")
     }
 
-    /// Get list of app names that have summaries available.
-    fn apps_with_summaries(&self) -> Vec<&str> {
-        self.apps
+    /// Get list of repo names that have summaries available.
+    fn repos_with_summaries(&self) -> Vec<&str> {
+        self.repos
             .iter()
-            .filter(|a| a.has_summary())
-            .map(|a| a.name())
+            .filter(|r| r.has_summary())
+            .map(|r| r.name())
             .collect()
     }
 }
 
 #[derive(Deserialize)]
 struct LsInput {
-    app: String,
+    repo: String,
     path: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct FindInput {
-    app: String,
+    repo: String,
     pattern: Option<String>,
 }
 
 #[derive(Deserialize)]
 struct ReadInput {
-    app: String,
+    repo: String,
     path: String,
     line_start: Option<usize>,
     line_end: Option<usize>,
@@ -534,7 +534,7 @@ struct ReadInput {
 
 #[derive(Deserialize)]
 struct SearchInput {
-    app: String,
+    repo: String,
     pattern: String,
     #[serde(default)]
     context: u32,
@@ -543,7 +543,7 @@ struct SearchInput {
 
 #[derive(Deserialize)]
 struct SummaryInput {
-    app: String,
+    repo: String,
 }
 
 #[async_trait]
@@ -552,49 +552,49 @@ impl ToolExecutor for CodeToolTools {
         let mut tools = vec![
             Tool {
                 name: "code_ls",
-                description: "List files in a directory of an application's source code.",
+                description: "List files in a directory of a repository's source code.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "app": {
+                        "repo": {
                             "type": "string",
-                            "description": "Name of the application"
+                            "description": "Name of the repository"
                         },
                         "path": {
                             "type": "string",
                             "description": "Directory path to list (optional, defaults to root)"
                         }
                     },
-                    "required": ["app"]
+                    "required": ["repo"]
                 }),
             },
             Tool {
                 name: "code_find",
-                description: "Find files matching a glob pattern in an application's source code.",
+                description: "Find files matching a glob pattern in a repository's source code.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "app": {
+                        "repo": {
                             "type": "string",
-                            "description": "Name of the application"
+                            "description": "Name of the repository"
                         },
                         "pattern": {
                             "type": "string",
                             "description": "Glob pattern to match (e.g., '*.rs', 'src/*.py')"
                         }
                     },
-                    "required": ["app"]
+                    "required": ["repo"]
                 }),
             },
             Tool {
                 name: "code_read",
-                description: "Read a file from an application's source code.",
+                description: "Read a file from a repository's source code.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "app": {
+                        "repo": {
                             "type": "string",
-                            "description": "Name of the application"
+                            "description": "Name of the repository"
                         },
                         "path": {
                             "type": "string",
@@ -609,18 +609,18 @@ impl ToolExecutor for CodeToolTools {
                             "description": "Ending line number (inclusive, optional)"
                         }
                     },
-                    "required": ["app", "path"]
+                    "required": ["repo", "path"]
                 }),
             },
             Tool {
                 name: "code_search",
-                description: "Search for a regex pattern in an application's source code (like grep).",
+                description: "Search for a regex pattern in a repository's source code (like grep).",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "app": {
+                        "repo": {
                             "type": "string",
-                            "description": "Name of the application"
+                            "description": "Name of the repository"
                         },
                         "pattern": {
                             "type": "string",
@@ -635,26 +635,26 @@ impl ToolExecutor for CodeToolTools {
                             "description": "Optional path prefix to limit search scope"
                         }
                     },
-                    "required": ["app", "pattern"]
+                    "required": ["repo", "pattern"]
                 }),
             },
         ];
 
-        // Only include summary tool if at least one app has a summary
-        let apps_with_summaries = self.apps_with_summaries();
-        if !apps_with_summaries.is_empty() {
+        // Only include summary tool if at least one repo has a summary
+        let repos_with_summaries = self.repos_with_summaries();
+        if !repos_with_summaries.is_empty() {
             tools.push(Tool {
                 name: "code_summary",
-                description: "Get a summary/overview of an application's codebase.",
+                description: "Get a summary/overview of a repository's codebase.",
                 input_schema: serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "app": {
+                        "repo": {
                             "type": "string",
-                            "description": format!("Name of the application. Apps with summaries: {}", apps_with_summaries.join(", "))
+                            "description": format!("Name of the repository. Repos with summaries: {}", repos_with_summaries.join(", "))
                         }
                     },
-                    "required": ["app"]
+                    "required": ["repo"]
                 }),
             });
         }
@@ -674,40 +674,40 @@ impl ToolExecutor for CodeToolTools {
             "code_ls" => {
                 let input: LsInput = serde_json::from_value(input.clone())
                     .map_err(|e| format!("Invalid input: {e}"))?;
-                let app = self.find_app(&input.app).ok_or_else(|| {
+                let repo = self.find_repo(&input.repo).ok_or_else(|| {
                     format!(
-                        "Unknown app '{}'. Available: {}",
-                        input.app,
-                        self.app_names()
+                        "Unknown repo '{}'. Available: {}",
+                        input.repo,
+                        self.repo_names()
                     )
                 })?;
-                let result = app.ls(input.path.as_deref()).await?;
+                let result = repo.ls(input.path.as_deref()).await?;
                 Ok(ToolResult::new(result))
             }
             "code_find" => {
                 let input: FindInput = serde_json::from_value(input.clone())
                     .map_err(|e| format!("Invalid input: {e}"))?;
-                let app = self.find_app(&input.app).ok_or_else(|| {
+                let repo = self.find_repo(&input.repo).ok_or_else(|| {
                     format!(
-                        "Unknown app '{}'. Available: {}",
-                        input.app,
-                        self.app_names()
+                        "Unknown repo '{}'. Available: {}",
+                        input.repo,
+                        self.repo_names()
                     )
                 })?;
-                let result = app.find(input.pattern.as_deref()).await?;
+                let result = repo.find(input.pattern.as_deref()).await?;
                 Ok(ToolResult::new(result))
             }
             "code_read" => {
                 let input: ReadInput = serde_json::from_value(input.clone())
                     .map_err(|e| format!("Invalid input: {e}"))?;
-                let app = self.find_app(&input.app).ok_or_else(|| {
+                let repo = self.find_repo(&input.repo).ok_or_else(|| {
                     format!(
-                        "Unknown app '{}'. Available: {}",
-                        input.app,
-                        self.app_names()
+                        "Unknown repo '{}'. Available: {}",
+                        input.repo,
+                        self.repo_names()
                     )
                 })?;
-                let result = app
+                let result = repo
                     .read(&input.path, input.line_start, input.line_end)
                     .await?;
                 Ok(ToolResult::new(result))
@@ -715,14 +715,14 @@ impl ToolExecutor for CodeToolTools {
             "code_search" => {
                 let input: SearchInput = serde_json::from_value(input.clone())
                     .map_err(|e| format!("Invalid input: {e}"))?;
-                let app = self.find_app(&input.app).ok_or_else(|| {
+                let repo = self.find_repo(&input.repo).ok_or_else(|| {
                     format!(
-                        "Unknown app '{}'. Available: {}",
-                        input.app,
-                        self.app_names()
+                        "Unknown repo '{}'. Available: {}",
+                        input.repo,
+                        self.repo_names()
                     )
                 })?;
-                let result = app
+                let result = repo
                     .search(&input.pattern, input.context, input.path_prefix.as_deref())
                     .await?;
                 Ok(ToolResult::new(result))
@@ -730,18 +730,18 @@ impl ToolExecutor for CodeToolTools {
             "code_summary" => {
                 let input: SummaryInput = serde_json::from_value(input.clone())
                     .map_err(|e| format!("Invalid input: {e}"))?;
-                let app = self.find_app(&input.app).ok_or_else(|| {
+                let repo = self.find_repo(&input.repo).ok_or_else(|| {
                     format!(
-                        "Unknown app '{}'. Available: {}",
-                        input.app,
-                        self.app_names()
+                        "Unknown repo '{}'. Available: {}",
+                        input.repo,
+                        self.repo_names()
                     )
                 })?;
-                let summary = app.summary().ok_or_else(|| {
+                let summary = repo.summary().ok_or_else(|| {
                     format!(
-                        "No summary available for '{}'. Apps with summaries: {}",
-                        input.app,
-                        self.apps_with_summaries().join(", ")
+                        "No summary available for '{}'. Repos with summaries: {}",
+                        input.repo,
+                        self.repos_with_summaries().join(", ")
                     )
                 })?;
                 Ok(ToolResult::new(summary.to_string()))
