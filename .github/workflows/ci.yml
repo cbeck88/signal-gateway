@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [ "master" ]
+    paths:
+      - '**'
+      - '!**.md'
+  pull_request:
+    paths:
+      - '**'
+      - '!**.md'
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+
+jobs:
+  # Build and test with default features
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    env:
+      RUSTFLAGS: --deny warnings
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Rustup update
+      run: rustup update
+    - name: Show cargo version
+      run: cargo --version
+    - name: Rust build caching
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: . -> target
+        key: default-features
+        save-if: ${{ github.ref == 'refs/heads/master' }}
+    - name: Build
+      run: cargo check --verbose --locked
+    - name: Test
+      run: cargo test --all --verbose --locked
+    - name: Check dirty git
+      uses: ./.github/actions/check-dirty-git
+
+  # Build and test with no default features
+  build-and-test-no-default-features:
+    runs-on: ubuntu-latest
+
+    env:
+      RUSTFLAGS: --deny warnings
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Rustup update
+      run: rustup update
+    - name: Show cargo version
+      run: cargo --version
+    - name: Rust build caching
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: . -> target
+        key: no-default-features
+        save-if: ${{ github.ref == 'refs/heads/master' }}
+    - name: Build
+      run: cargo check --no-default-features --verbose --locked
+    - name: Test
+      run: cargo test --no-default-features --verbose --locked
+    - name: Check dirty git
+      uses: ./.github/actions/check-dirty-git
+
+  # Linting and formatting
+  lint:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Rustup update and install nightly
+      run: |
+        rustup update
+        rustup install nightly
+        rustup component add rustfmt --toolchain nightly
+    - name: Show cargo version
+      run: cargo --version
+    - name: Rust build caching
+      uses: Swatinem/rust-cache@v2
+      with:
+        key: lint
+        workspaces: . -> target
+        save-if: ${{ github.ref == 'refs/heads/master' }}
+    - name: Format
+      run: cargo +nightly fmt -- --check
+    - name: Clippy
+      run: cargo clippy --all --all-features -- -D warnings
+
+  # Semver compatibility checks
+  semver-checks:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Check semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2
