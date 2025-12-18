@@ -323,23 +323,20 @@ impl CodeTool {
             .get(path)
             .ok_or_else(|| format!("File not found: {}", path))?;
 
-        let lines: Vec<&str> = file.content.lines().collect();
+        let total_lines = file.line_count();
+        let start = line_start.unwrap_or(1) as u32;
+        let end = line_end.map(|e| e as u32);
 
-        // Handle line range (1-indexed)
-        let start = line_start.unwrap_or(1).saturating_sub(1);
-        let end = line_end.unwrap_or(lines.len()).min(lines.len());
-
-        if start >= lines.len() {
+        if start > total_lines {
             return Ok(format!(
                 "Line {} is past end of file ({} lines)",
-                start + 1,
-                lines.len()
+                start, total_lines
             ));
         }
 
         let mut output = String::new();
-        for (i, line) in lines[start..end].iter().enumerate() {
-            writeln!(&mut output, "{:>6}\t{}", start + i + 1, line)
+        for (i, line) in file.line_range(Some(start), end).enumerate() {
+            writeln!(&mut output, "{:>6}\t{}", start as usize + i, line)
                 .map_err(|e| format!("Format error: {e}"))?;
         }
 
@@ -378,15 +375,18 @@ impl CodeTool {
             }
 
             // Skip binary-looking files
-            if file.is_binary {
+            if file.is_binary() {
                 continue;
             }
 
-            let lines: Vec<&str> = file.content.lines().collect();
-            let mut file_matches = Vec::new();
+            // Find all matches and map byte positions to line numbers
+            let content = file.as_str();
+            let mut file_matches: Vec<u32> = Vec::new();
 
-            for (line_num, line) in lines.iter().enumerate() {
-                if regex.is_match(line) {
+            for m in regex.find_iter(content) {
+                let line_num = file.idx_to_line(m.start());
+                // Deduplicate: only add if this line isn't already recorded
+                if file_matches.last() != Some(&line_num) {
                     file_matches.push(line_num);
                     match_count += 1;
                     if match_count >= MAX_MATCHES {
@@ -397,30 +397,25 @@ impl CodeTool {
 
             if !file_matches.is_empty() {
                 file_count += 1;
+                let total_lines = file.line_count();
 
                 if context == 0 {
                     // No context, just print matches
                     for &line_num in &file_matches {
-                        writeln!(
-                            &mut output,
-                            "{}:{}: {}",
-                            path,
-                            line_num + 1,
-                            lines[line_num]
-                        )
-                        .map_err(|e| format!("Format error: {e}"))?;
+                        let line = file.line_range(Some(line_num), Some(line_num)).next().unwrap_or("");
+                        writeln!(&mut output, "{}:{}: {}", path, line_num, line)
+                            .map_err(|e| format!("Format error: {e}"))?;
                     }
                 } else {
                     // Print with context
                     writeln!(&mut output, "=== {} ===", path)
                         .map_err(|e| format!("Format error: {e}"))?;
 
-                    let context = context as usize;
                     let mut printed = std::collections::BTreeSet::new();
 
                     for &match_line in &file_matches {
-                        let start = match_line.saturating_sub(context);
-                        let end = (match_line + context + 1).min(lines.len());
+                        let start = match_line.saturating_sub(context).max(1);
+                        let end = (match_line + context).min(total_lines);
 
                         // Add separator if there's a gap
                         if let Some(&last) = printed.iter().next_back()
@@ -430,11 +425,11 @@ impl CodeTool {
                                 .map_err(|e| format!("Format error: {e}"))?;
                         }
 
-                        for (i, line) in lines[start..end].iter().enumerate() {
-                            let line_idx = start + i;
-                            if printed.insert(line_idx) {
-                                let marker = if line_idx == match_line { ">" } else { " " };
-                                writeln!(&mut output, "{}{:>5}\t{}", marker, line_idx + 1, line)
+                        for (i, line) in file.line_range(Some(start), Some(end)).enumerate() {
+                            let line_num = start + i as u32;
+                            if printed.insert(line_num) {
+                                let marker = if line_num == match_line { ">" } else { " " };
+                                writeln!(&mut output, "{}{:>5}\t{}", marker, line_num, line)
                                     .map_err(|e| format!("Format error: {e}"))?;
                             }
                         }
