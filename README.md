@@ -5,6 +5,7 @@ An extensible monitoring tool, sending alerts via Signal messenger, and respondi
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square)](LICENSE-APACHE)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE-MIT)
+[![Build Status](https://img.shields.io/github/actions/workflow/status/cbeck88/signal-gateway/ci.yml?branch=master&style=flat-square)](https://github.com/cbeck88/signal-gateway/actions/workflows/ci.yml?query=branch%3Amaster)
 
 ## Overview
 

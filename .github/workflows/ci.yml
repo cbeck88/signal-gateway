@@ -25,6 +25,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Install system dependencies
+      run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
     - name: Rustup update
       run: rustup update
     - name: Show cargo version
@@ -40,7 +42,7 @@ jobs:
     - name: Test
       run: cargo test --all --verbose --locked
     - name: Check dirty git
-      uses: ./.github/actions/check-dirty-git
+      uses: cbeck88/check-dirty-git@v1
 
   # Build and test with no default features
   build-and-test-no-default-features:
@@ -51,6 +53,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Install system dependencies
+      run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
     - name: Rustup update
       run: rustup update
     - name: Show cargo version
@@ -66,7 +70,35 @@ jobs:
     - name: Test
       run: cargo test --no-default-features --verbose --locked
     - name: Check dirty git
-      uses: ./.github/actions/check-dirty-git
+      uses: cbeck88/check-dirty-git@v1
+
+  # Build and test with all features
+  build-and-test-all-features:
+    runs-on: ubuntu-latest
+
+    env:
+      RUSTFLAGS: --deny warnings
+
+    steps:
+    - uses: actions/checkout@v4
+    - name: Install system dependencies
+      run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
+    - name: Rustup update
+      run: rustup update
+    - name: Show cargo version
+      run: cargo --version
+    - name: Rust build caching
+      uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: . -> target
+        key: all-features
+        save-if: ${{ github.ref == 'refs/heads/master' }}
+    - name: Build
+      run: cargo check --all-features --verbose --locked
+    - name: Test
+      run: cargo test --all-features --verbose --locked
+    - name: Check dirty git
+      uses: cbeck88/check-dirty-git@v1
 
   # Linting and formatting
   lint:
@@ -74,6 +106,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Install system dependencies
+      run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
     - name: Rustup update and install nightly
       run: |
         rustup update
