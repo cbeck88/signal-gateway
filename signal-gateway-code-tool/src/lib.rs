@@ -291,14 +291,12 @@ impl CodeTool {
             .map_err(|e| format!("Invalid glob pattern: {e}"))?
             .compile_matcher();
 
-        let mut matches: Vec<&str> = cached
+        let matches: Vec<&str> = cached
             .files
             .keys()
             .filter(|path| glob.is_match(path))
             .map(|s| s.as_str())
             .collect();
-
-        matches.sort();
 
         if matches.is_empty() {
             Ok(format!("No files matching '{}'", pattern))
@@ -371,10 +369,7 @@ impl CodeTool {
         let mut file_count = 0;
         const MAX_MATCHES: usize = 100;
 
-        let mut sorted_files: Vec<_> = cached.files.iter().collect();
-        sorted_files.sort_by_key(|(path, _)| *path);
-
-        'outer: for (path, file) in sorted_files {
+        'outer: for (path, file) in &cached.files {
             // Skip if path doesn't match prefix
             if let Some(prefix) = prefix
                 && !path.starts_with(prefix)

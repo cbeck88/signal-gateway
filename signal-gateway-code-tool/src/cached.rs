@@ -2,7 +2,7 @@
 
 use flate2::read::GzDecoder;
 use globset::GlobSet;
-use std::{collections::HashMap, io::Read};
+use std::{collections::BTreeMap, io::Read};
 use tar::Archive;
 use tracing::info;
 
@@ -27,8 +27,8 @@ impl CachedFile {
 pub struct CachedTarball {
     /// The git SHA this tarball corresponds to.
     pub sha: String,
-    /// Map from file path to file contents.
-    pub files: HashMap<String, CachedFile>,
+    /// Map from file path to file contents (sorted by path).
+    pub files: BTreeMap<String, CachedFile>,
 }
 
 impl CachedTarball {
@@ -58,11 +58,11 @@ fn extract_files(
     tarball: &[u8],
     glob_filter: Option<&GlobSet>,
     include_non_utf8: bool,
-) -> Result<HashMap<String, CachedFile>, String> {
+) -> Result<BTreeMap<String, CachedFile>, String> {
     let decoder = GzDecoder::new(tarball);
     let mut archive = Archive::new(decoder);
 
-    let mut files = HashMap::new();
+    let mut files = BTreeMap::new();
 
     for entry in archive
         .entries()
