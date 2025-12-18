@@ -1,9 +1,14 @@
 [package]
 name = "signal-cli-jsonrpc-client"
 version = "0.1.0"
-edition.workspace = true
 description = "JSON-RPC client for signal-cli daemon"
-license = "MIT OR Apache-2.0"
+keywords = ["signal", "jsonrpc", "messaging"]
+categories = ["network-programming"]
+authors.workspace = true
+repository.workspace = true
+license.workspace = true
+edition.workspace = true
+include.workspace = true
 
 [lints]
 workspace = true

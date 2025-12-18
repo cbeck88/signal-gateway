@@ -12,7 +12,15 @@ members = [
 ]
 
 [workspace.package]
+authors = ["Chris Beck <beck.ct@gmail.com>"]
+repository = "https://github.com/cbeck88/signal-gateway"
+license = "MIT OR Apache-2.0"
 edition = "2024"
+include = [
+    "src/**/*",
+    "Cargo.toml",
+    "README.md",
+]
 
 [profile.release]
 # line-tables-only: keeps file/line info for backtraces, but strips variable/type debug info
