@@ -126,20 +126,12 @@ jobs:
     - name: Clippy
       run: cargo clippy --all --all-features -- -D warnings
 
-  # Semver compatibility checks
-  # Use git baseline since crates aren't published to crates.io yet
-  # See: https://github.com/obi1kenobi/cargo-semver-checks?tab=readme-ov-file#does-the-crate-im-checking-have-to-be-published-on-cratesio
+  # Semver compatibility checks against published crates.io versions
   semver-checks:
     runs-on: ubuntu-latest
-    # Only run on PRs (compare PR head against base branch)
-    if: github.event_name == 'pull_request'
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-          baseline-rev: ${{ github.event.pull_request.base.sha }}
