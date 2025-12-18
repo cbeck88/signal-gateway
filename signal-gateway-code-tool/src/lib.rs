@@ -360,21 +360,21 @@ impl CodeTool {
 
     /// Find files matching a glob pattern (like `find`).
     ///
-    /// Supports simple glob patterns with `*` wildcards.
+    /// Supports glob patterns using the `globset` crate syntax.
     pub async fn find(&self, pattern: Option<&str>) -> Result<String, String> {
         let cache = self.get_current_tarball().await;
         let cached = cache.as_ref().ok_or("source code not available")?;
 
         let pattern = pattern.unwrap_or("*");
 
-        // Convert glob pattern to regex
-        let regex_pattern = glob_to_regex(pattern);
-        let regex = Regex::new(&regex_pattern).map_err(|e| format!("Invalid pattern: {e}"))?;
+        let glob = Glob::new(pattern)
+            .map_err(|e| format!("Invalid glob pattern: {e}"))?
+            .compile_matcher();
 
         let mut matches: Vec<&str> = cached
             .files
             .keys()
-            .filter(|path| regex.is_match(path))
+            .filter(|path| glob.is_match(path))
             .map(|s| s.as_str())
             .collect();
 
@@ -546,24 +546,6 @@ impl CodeTool {
             ))
         }
     }
-}
-
-/// Convert a simple glob pattern to a regex.
-fn glob_to_regex(pattern: &str) -> String {
-    let mut regex = String::from("^");
-    for c in pattern.chars() {
-        match c {
-            '*' => regex.push_str(".*"),
-            '?' => regex.push('.'),
-            '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
-                regex.push('\\');
-                regex.push(c);
-            }
-            _ => regex.push(c),
-        }
-    }
-    regex.push('$');
-    regex
 }
 
 /// Check if content looks like binary data.
