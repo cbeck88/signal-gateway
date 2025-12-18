@@ -1,5 +1,13 @@
 use globset::{Glob, GlobMatcher};
 
+/// Helper which removes prefixes (represented as a glob) from a file path,
+/// trying each one in sequence.
+///
+/// For example, with the globset:
+/// [ "/home/*/", ".cargo/registry/src/*/" ]
+///
+/// this can remove a lot of noise if you build from your home directory with
+/// default cargo settings, regardless of what your username is etc.
 pub struct StripPathPrefixes {
     finders: Vec<Finder>,
 }

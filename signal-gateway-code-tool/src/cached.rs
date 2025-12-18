@@ -72,7 +72,10 @@ impl CachedFile {
     pub fn line_range(&self, start: Option<u32>, end: Option<u32>) -> impl Iterator<Item = &str> {
         let total_lines = self.line_count();
         let start_line = start.unwrap_or(1).saturating_sub(1); // Convert to 0-indexed
-        let end_line = end.unwrap_or(total_lines).min(total_lines).saturating_sub(1); // Convert to 0-indexed
+        let end_line = end
+            .unwrap_or(total_lines)
+            .min(total_lines)
+            .saturating_sub(1); // Convert to 0-indexed
 
         LineRangeIter {
             content: &self.content,
@@ -93,7 +96,6 @@ impl CachedFile {
             Err(pos) => pos as u32 + 1, // pos is the number of newlines before idx
         }
     }
-
 }
 
 /// Iterator over a range of lines.
@@ -118,7 +120,9 @@ impl<'a> Iterator for LineRangeIter<'a> {
         let start = if line == 0 {
             0
         } else {
-            self.newline_indices.get(line - 1).map(|&i| i as usize + 1)?
+            self.newline_indices
+                .get(line - 1)
+                .map(|&i| i as usize + 1)?
         };
 
         // Get end offset: at this line's newline, or end of content for last line

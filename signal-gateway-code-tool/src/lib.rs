@@ -421,7 +421,10 @@ impl CodeTool {
                 if context == 0 {
                     // No context, just print matches
                     for &line_num in &file_matches {
-                        let line = file.line_range(Some(line_num), Some(line_num)).next().unwrap_or("");
+                        let line = file
+                            .line_range(Some(line_num), Some(line_num))
+                            .next()
+                            .unwrap_or("");
                         writeln!(&mut output, "{}:{}: {}", path, line_num, line)
                             .map_err(|e| format!("Format error: {e}"))?;
                     }
