@@ -5,7 +5,7 @@
 
 mod config;
 
-pub use config::{GitHubRepo, RepoCodeConfig};
+pub use config::{GitHubRepo, RepoCodeConfig, Source};
 
 use async_trait::async_trait;
 use flate2::read::GzDecoder;
@@ -42,13 +42,26 @@ pub type ShaCallback = Arc<
         + Sync,
 >;
 
+/// Internal representation of the resolved source.
+enum ResolvedSource {
+    GitHub {
+        owner: String,
+        repo: String,
+        token: Option<String>,
+    },
+    File {
+        path: std::path::PathBuf,
+    },
+}
+
 /// Application source code browser.
 ///
 /// Downloads and caches GitHub tarballs for browsing application source code.
 pub struct RepoCode {
-    config: RepoCodeConfig,
-    token: Option<String>,
+    name: String,
+    source: ResolvedSource,
     glob_filter: Option<GlobSet>,
+    include_non_utf8: bool,
     get_sha: ShaCallback,
     client: reqwest::Client,
     cache: Mutex<Option<CachedTarball>>,
@@ -57,36 +70,46 @@ pub struct RepoCode {
 impl RepoCode {
     /// Create a new RepoCode instance from configuration.
     ///
-    /// The `get_sha` callback is called to determine which git SHA to download.
-    /// It should return `None` if the SHA is not yet known.
+    /// The `get_sha` callback is called to determine which git SHA to download/load.
+    /// For GitHub sources, this is the commit SHA. For file sources, this can be
+    /// used to track file modification (e.g., mtime or a version string).
     pub fn new(config: RepoCodeConfig, get_sha: ShaCallback) -> Result<Self, std::io::Error> {
-        let token = config
-            .token_file
-            .as_ref()
-            .map(|path| std::fs::read_to_string(path).map(|s| s.trim().to_string()))
-            .transpose()?;
+        let source = match config.source {
+            Source::GitHub { repo, token_file } => {
+                let token = token_file
+                    .as_ref()
+                    .map(|path| std::fs::read_to_string(path).map(|s| s.trim().to_string()))
+                    .transpose()?;
+                ResolvedSource::GitHub {
+                    owner: repo.owner,
+                    repo: repo.repo,
+                    token,
+                }
+            }
+            Source::File { path } => ResolvedSource::File { path },
+        };
 
         // Compile glob patterns if any are specified
-        let glob_filter =
-            if config.glob.is_empty() {
-                None
-            } else {
-                let mut builder = GlobSetBuilder::new();
-                for pattern in &config.glob {
-                    let glob = Glob::new(pattern).map_err(|e| {
-                        std::io::Error::other(format!("invalid glob pattern '{}': {}", pattern, e))
-                    })?;
-                    builder.add(glob);
-                }
-                Some(builder.build().map_err(|e| {
-                    std::io::Error::other(format!("failed to build glob set: {}", e))
-                })?)
-            };
+        let glob_filter = if config.glob.is_empty() {
+            None
+        } else {
+            let mut builder = GlobSetBuilder::new();
+            for pattern in &config.glob {
+                let glob = Glob::new(pattern).map_err(|e| {
+                    std::io::Error::other(format!("invalid glob pattern '{}': {}", pattern, e))
+                })?;
+                builder.add(glob);
+            }
+            Some(builder.build().map_err(|e| {
+                std::io::Error::other(format!("failed to build glob set: {}", e))
+            })?)
+        };
 
         Ok(Self {
-            config,
-            token,
+            name: config.name,
+            source,
             glob_filter,
+            include_non_utf8: config.include_non_utf8,
             get_sha,
             client: reqwest::Client::new(),
             cache: Mutex::new(None),
@@ -95,16 +118,16 @@ impl RepoCode {
 
     /// Get the application name.
     pub fn name(&self) -> &str {
-        &self.config.name
+        &self.name
     }
 
-    /// Get the current tarball, downloading if necessary.
+    /// Get the current tarball, downloading or reading from file as needed.
     ///
     /// Returns a mutex guard containing the cached tarball. This method never fails;
     /// instead it logs warnings and returns whatever is currently cached:
     ///
     /// - If the SHA callback fails, returns the existing cache (possibly stale or None)
-    /// - If the tarball download fails, returns the existing cache
+    /// - If the tarball download/read fails, returns the existing cache
     /// - If tarball extraction fails, returns the existing cache
     ///
     /// This design assumes that stale code is better than no code, since most of the
@@ -113,29 +136,29 @@ impl RepoCode {
         let current_sha = match (self.get_sha)().await {
             Ok(sha) => sha,
             Err(e) => {
-                warn!("Failed to get current SHA for {}: {e}", self.config.name);
+                warn!("Failed to get current SHA for {}: {e}", self.name);
                 return self.cache.lock().await;
             }
         };
 
         let mut cache = self.cache.lock().await;
 
-        // Check if we already have this SHA cached
-        let needs_download = match &*cache {
-            Some(cached) => cached.sha != current_sha,
-            None => true,
+        // Check if we need to load/reload the tarball.
+        // For file sources, we only load once (no refresh after initial load).
+        // For GitHub sources, we reload when the SHA changes.
+        let needs_refresh = match (&*cache, &self.source) {
+            (None, _) => true,
+            (Some(_), ResolvedSource::File { .. }) => false,
+            (Some(cached), ResolvedSource::GitHub { .. }) => cached.sha != current_sha,
         };
 
-        if needs_download {
-            info!(
-                "Downloading tarball for {} at {}",
-                self.config.name, current_sha
-            );
+        if needs_refresh {
+            info!("Loading tarball for {} at {}", self.name, current_sha);
 
-            let tarball = match self.download_tarball(&current_sha).await {
+            let tarball = match self.load_tarball(&current_sha).await {
                 Ok(t) => t,
                 Err(e) => {
-                    error!("Failed to download tarball for {}: {e}", self.config.name);
+                    error!("Failed to load tarball for {}: {e}", self.name);
                     return cache;
                 }
             };
@@ -143,7 +166,7 @@ impl RepoCode {
             let files = match self.extract_tarball(&tarball) {
                 Ok(f) => f,
                 Err(e) => {
-                    error!("Failed to extract tarball for {}: {e}", self.config.name);
+                    error!("Failed to extract tarball for {}: {e}", self.name);
                     return cache;
                 }
             };
@@ -157,11 +180,30 @@ impl RepoCode {
         cache
     }
 
+    /// Load a tarball either from GitHub or from a local file.
+    async fn load_tarball(&self, sha: &str) -> Result<Vec<u8>, String> {
+        match &self.source {
+            ResolvedSource::GitHub { owner, repo, token } => {
+                self.download_tarball_from_github(owner, repo, token.as_deref(), sha)
+                    .await
+            }
+            ResolvedSource::File { path } => std::fs::read(path).map_err(|e| {
+                format!("Failed to read tarball from {}: {e}", path.display())
+            }),
+        }
+    }
+
     /// Download a tarball from GitHub for the given SHA.
-    async fn download_tarball(&self, sha: &str) -> Result<Vec<u8>, String> {
+    async fn download_tarball_from_github(
+        &self,
+        owner: &str,
+        repo: &str,
+        token: Option<&str>,
+        sha: &str,
+    ) -> Result<Vec<u8>, String> {
         let url = format!(
             "https://api.github.com/repos/{}/{}/tarball/{}",
-            self.config.github.owner, self.config.github.repo, sha
+            owner, repo, sha
         );
 
         let mut request = self
@@ -171,7 +213,7 @@ impl RepoCode {
             .header("User-Agent", "signal-gateway")
             .header("X-GitHub-Api-Version", "2022-11-28");
 
-        if let Some(token) = &self.token {
+        if let Some(token) = token {
             request = request.header("Authorization", format!("Bearer {}", token));
         }
 
@@ -244,7 +286,7 @@ impl RepoCode {
             let content = match String::from_utf8(contents) {
                 Ok(s) => s,
                 Err(e) => {
-                    if self.config.include_non_utf8 {
+                    if self.include_non_utf8 {
                         // Use lossy conversion if configured to include non-UTF-8
                         String::from_utf8_lossy(e.as_bytes()).into_owned()
                     } else {

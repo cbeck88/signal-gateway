@@ -3,7 +3,7 @@
 //! These tests exercise the GitHub tarball download and file browsing functionality
 //! against a real public repository at a pinned commit.
 
-use signal_gateway_repo_code::{GitHubRepo, RepoCode, RepoCodeConfig, ShaCallback};
+use signal_gateway_repo_code::{GitHubRepo, RepoCode, RepoCodeConfig, ShaCallback, Source};
 use std::sync::Arc;
 
 /// Test against cbeck88/ver-stub-rs at a known commit.
@@ -12,18 +12,20 @@ const TEST_OWNER: &str = "cbeck88";
 const TEST_REPO: &str = "ver-stub-rs";
 const TEST_SHA: &str = "79b98e25f27ae4f5dd73a5a3d8f37dad655a57e8";
 
-fn create_test_app_code() -> RepoCode {
-    create_test_app_code_with_glob(vec![])
+fn create_test_repo_code() -> RepoCode {
+    create_test_repo_code_with_glob(vec![])
 }
 
-fn create_test_app_code_with_glob(glob: Vec<String>) -> RepoCode {
+fn create_test_repo_code_with_glob(glob: Vec<String>) -> RepoCode {
     let config = RepoCodeConfig {
         name: "test-app".to_string(),
-        github: GitHubRepo {
-            owner: TEST_OWNER.to_string(),
-            repo: TEST_REPO.to_string(),
+        source: Source::GitHub {
+            repo: GitHubRepo {
+                owner: TEST_OWNER.to_string(),
+                repo: TEST_REPO.to_string(),
+            },
+            token_file: None, // Public repo, no auth needed
         },
-        token_file: None, // Public repo, no auth needed
         glob,
         include_non_utf8: false,
     };
@@ -39,7 +41,7 @@ fn create_test_app_code_with_glob(glob: Vec<String>) -> RepoCode {
 
 #[tokio::test]
 async fn test_ls_root() {
-    let app = create_test_app_code();
+    let app = create_test_repo_code();
 
     let result = app.ls(None).await.expect("ls failed");
 
@@ -59,7 +61,7 @@ async fn test_ls_root() {
 
 #[tokio::test]
 async fn test_ls_subdirectory() {
-    let app = create_test_app_code();
+    let app = create_test_repo_code();
 
     let result = app.ls(Some("ver-stub")).await.expect("ls failed");
 
@@ -70,7 +72,7 @@ async fn test_ls_subdirectory() {
 
 #[tokio::test]
 async fn test_find_rust_files() {
-    let app = create_test_app_code();
+    let app = create_test_repo_code();
 
     let result = app.find(Some("*.rs")).await.expect("find failed");
 
@@ -87,7 +89,7 @@ async fn test_find_rust_files() {
 
 #[tokio::test]
 async fn test_find_with_path_pattern() {
-    let app = create_test_app_code();
+    let app = create_test_repo_code();
 
     let result = app
         .find(Some("ver-stub-build/src/*.rs"))
@@ -103,7 +105,7 @@ async fn test_find_with_path_pattern() {
 
 #[tokio::test]
 async fn test_read_cargo_toml() {
-    let app = create_test_app_code();
+    let app = create_test_repo_code();
 
     let result = app
         .read("Cargo.toml", None, None)
@@ -121,7 +123,7 @@ async fn test_read_cargo_toml() {
 
 #[tokio::test]
 async fn test_read_with_line_range() {
-    let app = create_test_app_code();
+    let app = create_test_repo_code();
 
     // Read just the first 5 lines
     let result = app
@@ -142,7 +144,7 @@ async fn test_read_with_line_range() {
 
 #[tokio::test]
 async fn test_read_nonexistent_file() {
-    let app = create_test_app_code();
+    let app = create_test_repo_code();
 
     let result = app.read("nonexistent-file.txt", None, None).await;
 
@@ -155,7 +157,7 @@ async fn test_read_nonexistent_file() {
 
 #[tokio::test]
 async fn test_search_simple() {
-    let app = create_test_app_code();
+    let app = create_test_repo_code();
 
     let result = app
         .search("workspace", 0, None)
@@ -171,7 +173,7 @@ async fn test_search_simple() {
 
 #[tokio::test]
 async fn test_search_with_context() {
-    let app = create_test_app_code();
+    let app = create_test_repo_code();
 
     let result = app
         .search("resolver", 2, None)
@@ -192,7 +194,7 @@ async fn test_search_with_context() {
 
 #[tokio::test]
 async fn test_search_with_path_prefix() {
-    let app = create_test_app_code();
+    let app = create_test_repo_code();
 
     // Search only in ver-stub-build directory
     let result = app
@@ -215,7 +217,7 @@ async fn test_search_with_path_prefix() {
 
 #[tokio::test]
 async fn test_search_no_matches() {
-    let app = create_test_app_code();
+    let app = create_test_repo_code();
 
     let result = app
         .search("xyzzy_unlikely_string_12345", 0, None)
@@ -228,7 +230,7 @@ async fn test_search_no_matches() {
 #[tokio::test]
 async fn test_glob_filter_rust_files_only() {
     // Only include .rs files
-    let app = create_test_app_code_with_glob(vec!["**/*.rs".to_string()]);
+    let app = create_test_repo_code_with_glob(vec!["**/*.rs".to_string()]);
 
     let result = app.find(Some("*")).await.expect("find failed");
 
@@ -250,7 +252,7 @@ async fn test_glob_filter_rust_files_only() {
 #[tokio::test]
 async fn test_glob_filter_specific_directory() {
     // Only include files in ver-stub/src
-    let app = create_test_app_code_with_glob(vec!["ver-stub/src/**".to_string()]);
+    let app = create_test_repo_code_with_glob(vec!["ver-stub/src/**".to_string()]);
 
     let result = app.find(Some("*")).await.expect("find failed");
 
@@ -274,7 +276,7 @@ async fn test_glob_filter_specific_directory() {
 #[tokio::test]
 async fn test_glob_filter_multiple_patterns() {
     // Include both Cargo.toml files and shell scripts
-    let app = create_test_app_code_with_glob(vec!["**/Cargo.toml".to_string(), "*.sh".to_string()]);
+    let app = create_test_repo_code_with_glob(vec!["**/Cargo.toml".to_string(), "*.sh".to_string()]);
 
     let result = app.find(Some("*")).await.expect("find failed");
 
@@ -295,7 +297,7 @@ async fn test_glob_filter_multiple_patterns() {
 #[tokio::test]
 async fn test_glob_filter_ls_shows_filtered_dirs() {
     // Only include files in ver-stub directory
-    let app = create_test_app_code_with_glob(vec!["ver-stub/**".to_string()]);
+    let app = create_test_repo_code_with_glob(vec!["ver-stub/**".to_string()]);
 
     let result = app.ls(None).await.expect("ls failed");
 
