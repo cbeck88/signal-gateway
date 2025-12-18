@@ -1858,6 +1858,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0fda2ff0d084019ba4d7c6f371c95d8fd75ce3524c3cb8fb653a3023f6323e64"
 
 [[package]]
+name = "signal-cli-jsonrpc-client"
+version = "0.1.0"
+dependencies = [
+ "futures-util",
+ "jsonrpsee",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
 name = "signal-gateway"
 version = "0.1.0"
 dependencies = [
@@ -1869,7 +1883,6 @@ dependencies = [
  "displaydoc",
  "futures-util",
  "humantime",
- "jsonrpsee",
  "metrics",
  "prometheus-http-client",
  "rand",
@@ -1877,6 +1890,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "signal-cli-jsonrpc-client",
  "signal-gateway-assistant",
  "thiserror",
  "tokio",
