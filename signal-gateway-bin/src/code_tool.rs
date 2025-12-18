@@ -1,24 +1,24 @@
 //! Extended configuration for application source code browsing.
 
 use serde::Deserialize;
-use signal_gateway_repo_code::{RepoCode, RepoCodeConfig, ShaCallback};
+use signal_gateway_code_tool::{CodeTool, CodeToolConfig, ShaCallback};
 use std::sync::Arc;
 use tracing::warn;
 use url::Url;
 
-/// Extended configuration for RepoCode with HTTP-based SHA fetching.
+/// Extended configuration for CodeTool with HTTP-based SHA fetching.
 #[derive(Clone, Debug, Deserialize)]
-pub struct RepoCodeConfigExt {
-    /// The base RepoCode configuration.
+pub struct CodeToolConfigExt {
+    /// The base CodeTool configuration.
     #[serde(flatten)]
-    pub config: RepoCodeConfig,
+    pub config: CodeToolConfig,
     /// URL to GET the current deployed version SHA.
     pub version_sha_http_get: Url,
 }
 
-impl RepoCodeConfigExt {
-    /// Convert to an RepoCode instance with HTTP-based SHA callback.
-    pub fn into_app_code(self) -> Result<RepoCode, std::io::Error> {
+impl CodeToolConfigExt {
+    /// Convert to an CodeTool instance with HTTP-based SHA callback.
+    pub fn into_app_code(self) -> Result<CodeTool, std::io::Error> {
         let url = self.version_sha_http_get.clone();
         let client = reqwest::Client::new();
 
@@ -66,6 +66,6 @@ impl RepoCodeConfigExt {
             })
         });
 
-        RepoCode::new(self.config, sha_callback)
+        CodeTool::new(self.config, sha_callback)
     }
 }

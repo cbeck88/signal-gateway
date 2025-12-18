@@ -1,9 +1,9 @@
-//! Integration tests for signal-gateway-repo-code.
+//! Integration tests for signal-gateway-code-tool.
 //!
 //! These tests exercise the GitHub tarball download and file browsing functionality
 //! against a real public repository at a pinned commit.
 
-use signal_gateway_repo_code::{GitHubRepo, RepoCode, RepoCodeConfig, ShaCallback, Source};
+use signal_gateway_code_tool::{CodeTool, CodeToolConfig, GitHubRepo, ShaCallback, Source};
 use std::sync::Arc;
 
 /// Test against cbeck88/ver-stub-rs at a known commit.
@@ -12,12 +12,12 @@ const TEST_OWNER: &str = "cbeck88";
 const TEST_REPO: &str = "ver-stub-rs";
 const TEST_SHA: &str = "79b98e25f27ae4f5dd73a5a3d8f37dad655a57e8";
 
-fn create_test_repo_code() -> RepoCode {
+fn create_test_repo_code() -> CodeTool {
     create_test_repo_code_with_glob(vec![])
 }
 
-fn create_test_repo_code_with_glob(glob: Vec<String>) -> RepoCode {
-    let config = RepoCodeConfig {
+fn create_test_repo_code_with_glob(glob: Vec<String>) -> CodeTool {
+    let config = CodeToolConfig {
         name: "test-app".to_string(),
         source: Source::GitHub {
             repo: GitHubRepo {
@@ -36,7 +36,7 @@ fn create_test_repo_code_with_glob(glob: Vec<String>) -> RepoCode {
         Box::pin(async move { Ok(sha) })
     });
 
-    RepoCode::new(config, sha_callback).expect("Failed to create RepoCode")
+    CodeTool::new(config, sha_callback).expect("Failed to create CodeTool")
 }
 
 #[tokio::test]
@@ -276,7 +276,8 @@ async fn test_glob_filter_specific_directory() {
 #[tokio::test]
 async fn test_glob_filter_multiple_patterns() {
     // Include both Cargo.toml files and shell scripts
-    let app = create_test_repo_code_with_glob(vec!["**/Cargo.toml".to_string(), "*.sh".to_string()]);
+    let app =
+        create_test_repo_code_with_glob(vec!["**/Cargo.toml".to_string(), "*.sh".to_string()]);
 
     let result = app.find(Some("*")).await.expect("find failed");
 

@@ -1,5 +1,5 @@
 [package]
-name = "signal-gateway-repo-code"
+name = "signal-gateway-code-tool"
 version = "0.1.0"
 edition.workspace = true
 

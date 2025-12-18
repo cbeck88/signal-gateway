@@ -18,7 +18,7 @@ rustls-tls = ["signal-gateway/rustls-tls"]
 [dependencies]
 signal-gateway = { workspace = true }
 signal-gateway-assistant-claude = { workspace = true }
-signal-gateway-repo-code = { path = "../signal-gateway-repo-code" }
+signal-gateway-code-tool = { path = "../signal-gateway-code-tool" }
 signal-gateway-log-ingest = { path = "../signal-gateway-log-ingest" }
 
 async-trait = { workspace = true }

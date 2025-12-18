@@ -61,7 +61,7 @@ pub enum Source {
 
 /// Configuration for an application's source code access.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
-pub struct RepoCodeConfig {
+pub struct CodeToolConfig {
     /// Name of the application (used to identify it in tool calls).
     pub name: String,
     /// Source of the repository code.
@@ -92,7 +92,7 @@ mod tests {
             }
         }"#;
 
-        let config: RepoCodeConfig = serde_json::from_str(json).unwrap();
+        let config: CodeToolConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.name, "my-app");
         assert_eq!(
             config.source,
@@ -117,7 +117,7 @@ mod tests {
             }
         }"#;
 
-        let config: RepoCodeConfig = serde_json::from_str(json).unwrap();
+        let config: CodeToolConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.name, "public-app");
         assert_eq!(
             config.source,
@@ -140,7 +140,7 @@ mod tests {
             }
         }"#;
 
-        let config: RepoCodeConfig = serde_json::from_str(json).unwrap();
+        let config: CodeToolConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.name, "local-app");
         assert_eq!(
             config.source,
@@ -161,7 +161,7 @@ mod tests {
             "include_non_utf8": true
         }"#;
 
-        let config: RepoCodeConfig = serde_json::from_str(json).unwrap();
+        let config: CodeToolConfig = serde_json::from_str(json).unwrap();
         assert_eq!(config.name, "filtered-app");
         assert_eq!(config.glob, vec!["**/*.rs", "Cargo.toml"]);
         assert!(config.include_non_utf8);

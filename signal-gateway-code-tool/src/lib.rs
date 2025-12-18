@@ -5,7 +5,7 @@
 
 mod config;
 
-pub use config::{GitHubRepo, RepoCodeConfig, Source};
+pub use config::{CodeToolConfig, GitHubRepo, Source};
 
 use async_trait::async_trait;
 use flate2::read::GzDecoder;
@@ -13,7 +13,9 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::Regex;
 use serde::Deserialize;
 use signal_gateway_assistant::{Tool, ToolExecutor, ToolResult};
-use std::{collections::HashMap, error::Error, fmt::Write, future::Future, io::Read, pin::Pin, sync::Arc};
+use std::{
+    collections::HashMap, error::Error, fmt::Write, future::Future, io::Read, pin::Pin, sync::Arc,
+};
 use tar::Archive;
 use tokio::sync::{Mutex, MutexGuard};
 use tracing::{error, info, warn};
@@ -57,7 +59,7 @@ enum ResolvedSource {
 /// Application source code browser.
 ///
 /// Downloads and caches GitHub tarballs for browsing application source code.
-pub struct RepoCode {
+pub struct CodeTool {
     name: String,
     source: ResolvedSource,
     glob_filter: Option<GlobSet>,
@@ -67,13 +69,13 @@ pub struct RepoCode {
     cache: Mutex<Option<CachedTarball>>,
 }
 
-impl RepoCode {
-    /// Create a new RepoCode instance from configuration.
+impl CodeTool {
+    /// Create a new CodeTool instance from configuration.
     ///
     /// The `get_sha` callback is called to determine which git SHA to download/load.
     /// For GitHub sources, this is the commit SHA. For file sources, this can be
     /// used to track file modification (e.g., mtime or a version string).
-    pub fn new(config: RepoCodeConfig, get_sha: ShaCallback) -> Result<Self, std::io::Error> {
+    pub fn new(config: CodeToolConfig, get_sha: ShaCallback) -> Result<Self, std::io::Error> {
         let source = match config.source {
             Source::GitHub { repo, token_file } => {
                 let token = token_file
@@ -90,20 +92,21 @@ impl RepoCode {
         };
 
         // Compile glob patterns if any are specified
-        let glob_filter = if config.glob.is_empty() {
-            None
-        } else {
-            let mut builder = GlobSetBuilder::new();
-            for pattern in &config.glob {
-                let glob = Glob::new(pattern).map_err(|e| {
-                    std::io::Error::other(format!("invalid glob pattern '{}': {}", pattern, e))
-                })?;
-                builder.add(glob);
-            }
-            Some(builder.build().map_err(|e| {
-                std::io::Error::other(format!("failed to build glob set: {}", e))
-            })?)
-        };
+        let glob_filter =
+            if config.glob.is_empty() {
+                None
+            } else {
+                let mut builder = GlobSetBuilder::new();
+                for pattern in &config.glob {
+                    let glob = Glob::new(pattern).map_err(|e| {
+                        std::io::Error::other(format!("invalid glob pattern '{}': {}", pattern, e))
+                    })?;
+                    builder.add(glob);
+                }
+                Some(builder.build().map_err(|e| {
+                    std::io::Error::other(format!("failed to build glob set: {}", e))
+                })?)
+            };
 
         Ok(Self {
             name: config.name,
@@ -187,9 +190,8 @@ impl RepoCode {
                 self.download_tarball_from_github(owner, repo, token.as_deref(), sha)
                     .await
             }
-            ResolvedSource::File { path } => std::fs::read(path).map_err(|e| {
-                format!("Failed to read tarball from {}: {e}", path.display())
-            }),
+            ResolvedSource::File { path } => std::fs::read(path)
+                .map_err(|e| format!("Failed to read tarball from {}: {e}", path.display())),
         }
     }
 
@@ -576,18 +578,18 @@ fn looks_binary(content: &str) -> bool {
 }
 
 /// Tool executor for multiple application source code browsers.
-pub struct RepoCodeTools {
-    apps: Vec<RepoCode>,
+pub struct CodeToolTools {
+    apps: Vec<CodeTool>,
 }
 
-impl RepoCodeTools {
-    /// Create a new RepoCodeTools instance.
-    pub fn new(apps: Vec<RepoCode>) -> Self {
+impl CodeToolTools {
+    /// Create a new CodeToolTools instance.
+    pub fn new(apps: Vec<CodeTool>) -> Self {
         Self { apps }
     }
 
     /// Find an app by name.
-    fn find_app(&self, name: &str) -> Option<&RepoCode> {
+    fn find_app(&self, name: &str) -> Option<&CodeTool> {
         self.apps.iter().find(|app| app.name() == name)
     }
 
@@ -631,7 +633,7 @@ struct SearchInput {
 }
 
 #[async_trait]
-impl ToolExecutor for RepoCodeTools {
+impl ToolExecutor for CodeToolTools {
     fn tools(&self) -> Vec<Tool> {
         vec![
             Tool {
