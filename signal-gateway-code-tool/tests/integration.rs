@@ -28,6 +28,7 @@ fn create_test_repo_code_with_glob(glob: Vec<String>) -> CodeTool {
         },
         glob,
         include_non_utf8: false,
+        summary_file: None,
     };
 
     let sha = TEST_SHA.to_string();

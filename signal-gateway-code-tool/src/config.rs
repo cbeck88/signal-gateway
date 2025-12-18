@@ -76,6 +76,10 @@ pub struct CodeToolConfig {
     /// By default (false), non-UTF-8 files are skipped entirely.
     #[serde(default)]
     pub include_non_utf8: bool,
+    /// Path to a file containing a summary/description of the codebase.
+    /// If present, the agent can request a summary of the repository.
+    #[serde(default)]
+    pub summary_file: Option<String>,
 }
 
 #[cfg(test)]

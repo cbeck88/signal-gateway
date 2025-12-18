@@ -47,6 +47,7 @@ pub struct CodeTool {
     config: CodeToolConfig,
     source: ResolvedSource,
     glob_filter: Option<GlobSet>,
+    summary: Option<Box<str>>,
     get_sha: ShaCallback,
     client: reqwest::Client,
     cache: Mutex<Option<CachedTarball>>,
@@ -91,10 +92,18 @@ impl CodeTool {
                 })?)
             };
 
+        // Load summary from file if configured
+        let summary = config
+            .summary_file
+            .as_ref()
+            .map(|path| std::fs::read_to_string(path).map(|s| s.into_boxed_str()))
+            .transpose()?;
+
         Ok(Self {
             config,
             source,
             glob_filter,
+            summary,
             get_sha,
             client: reqwest::Client::new(),
             cache: Mutex::new(None),
@@ -104,6 +113,16 @@ impl CodeTool {
     /// Get the application name.
     pub fn name(&self) -> &str {
         &self.config.name
+    }
+
+    /// Check if this code tool has a summary available.
+    pub fn has_summary(&self) -> bool {
+        self.summary.is_some()
+    }
+
+    /// Get the summary of the codebase, if available.
+    pub fn summary(&self) -> Option<&str> {
+        self.summary.as_deref()
     }
 
     /// Get the current tarball, downloading or reading from file as needed.
@@ -482,6 +501,15 @@ impl CodeToolTools {
             .collect::<Vec<_>>()
             .join(", ")
     }
+
+    /// Get list of app names that have summaries available.
+    fn apps_with_summaries(&self) -> Vec<&str> {
+        self.apps
+            .iter()
+            .filter(|a| a.has_summary())
+            .map(|a| a.name())
+            .collect()
+    }
 }
 
 #[derive(Deserialize)]
@@ -513,10 +541,15 @@ struct SearchInput {
     path_prefix: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct SummaryInput {
+    app: String,
+}
+
 #[async_trait]
 impl ToolExecutor for CodeToolTools {
     fn tools(&self) -> Vec<Tool> {
-        vec![
+        let mut tools = vec![
             Tool {
                 name: "code_ls",
                 description: "List files in a directory of an application's source code.",
@@ -605,11 +638,35 @@ impl ToolExecutor for CodeToolTools {
                     "required": ["app", "pattern"]
                 }),
             },
-        ]
+        ];
+
+        // Only include summary tool if at least one app has a summary
+        let apps_with_summaries = self.apps_with_summaries();
+        if !apps_with_summaries.is_empty() {
+            tools.push(Tool {
+                name: "code_summary",
+                description: "Get a summary/overview of an application's codebase.",
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "app": {
+                            "type": "string",
+                            "description": format!("Name of the application. Apps with summaries: {}", apps_with_summaries.join(", "))
+                        }
+                    },
+                    "required": ["app"]
+                }),
+            });
+        }
+
+        tools
     }
 
     fn has_tool(&self, name: &str) -> bool {
-        matches!(name, "code_ls" | "code_find" | "code_read" | "code_search")
+        matches!(
+            name,
+            "code_ls" | "code_find" | "code_read" | "code_search" | "code_summary"
+        )
     }
 
     async fn execute(&self, name: &str, input: &serde_json::Value) -> Result<ToolResult, String> {
@@ -669,6 +726,25 @@ impl ToolExecutor for CodeToolTools {
                     .search(&input.pattern, input.context, input.path_prefix.as_deref())
                     .await?;
                 Ok(ToolResult::new(result))
+            }
+            "code_summary" => {
+                let input: SummaryInput = serde_json::from_value(input.clone())
+                    .map_err(|e| format!("Invalid input: {e}"))?;
+                let app = self.find_app(&input.app).ok_or_else(|| {
+                    format!(
+                        "Unknown app '{}'. Available: {}",
+                        input.app,
+                        self.app_names()
+                    )
+                })?;
+                let summary = app.summary().ok_or_else(|| {
+                    format!(
+                        "No summary available for '{}'. Apps with summaries: {}",
+                        input.app,
+                        self.apps_with_summaries().join(", ")
+                    )
+                })?;
+                Ok(ToolResult::new(summary.to_string()))
             }
             _ => Err(format!("Unknown tool: {name}")),
         }
