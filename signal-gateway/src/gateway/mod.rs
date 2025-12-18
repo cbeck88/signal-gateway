@@ -261,12 +261,15 @@ pub struct Gateway {
     /// Additional tool executors added via the builder.
     extra_tool_executors: Vec<Arc<dyn ToolExecutor>>,
     /// Path normalization function
-    path_normalization_fn: Option<Box<dyn Fn(&str) -> &str + Send + Sync>>,
+    path_normalization_fn: Option<PathNormFn>,
 }
 
 /// Type alias for the assistant factory function.
 pub type AssistantFactory =
     Box<dyn FnOnce(Weak<dyn ToolExecutor>) -> Box<dyn crate::assistant::Assistant> + Send>;
+
+/// Type alias for the path normalization function.
+pub type PathNormFn = Box<dyn Fn(&str) -> &str + Send + Sync>;
 
 /// Builder for creating a [`Gateway`] with optional additional tool executors.
 pub struct GatewayBuilder {
@@ -275,7 +278,7 @@ pub struct GatewayBuilder {
     command_router: Option<CommandRouter>,
     extra_tool_executors: Vec<Arc<dyn ToolExecutor>>,
     assistant_factory: Option<AssistantFactory>,
-    path_normalization_fn: Option<Box<dyn Fn(&str) -> &str + Send + Sync>>,
+    path_normalization_fn: Option<PathNormFn>,
 }
 
 impl GatewayBuilder {
@@ -360,7 +363,7 @@ impl Gateway {
         command_router: CommandRouter,
         extra_tool_executors: Vec<Arc<dyn ToolExecutor>>,
         assistant_factory: Option<AssistantFactory>,
-        path_normalization_fn: Option<Box<dyn Fn(&str) -> &str + Send + Sync>>,
+        path_normalization_fn: Option<PathNormFn>,
     ) -> Arc<Self> {
         let child_token = token.child_token();
         let (signal_alert_mq_tx, signal_alert_mq_rx) = unbounded_channel();

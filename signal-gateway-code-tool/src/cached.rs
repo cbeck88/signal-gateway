@@ -208,11 +208,10 @@ fn extract_files(
         }
 
         // Apply glob filter if configured
-        if let Some(glob_filter) = glob_filter {
-            if !glob_filter.is_match(&path) {
+        if let Some(glob_filter) = glob_filter
+            && !glob_filter.is_match(&path) {
                 continue;
             }
-        }
 
         // Read file contents
         let mut contents = Vec::new();

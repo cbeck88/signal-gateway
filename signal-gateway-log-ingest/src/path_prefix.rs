@@ -75,6 +75,7 @@ impl PathPrefixFinder for Finder {
     }
 }
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Clone)]
 enum FinderInner {
     LeadingDoubleStar {
@@ -118,7 +119,7 @@ impl FinderInner {
                     "** must be followed by / or end of string"
                 );
                 let lits = rem.find(META).unwrap_or(rem.len());
-                let rneedle = (&rem[..lits]).to_owned().into_boxed_str();
+                let rneedle = rem[..lits].to_owned().into_boxed_str();
                 let child = Some(Box::new(Self::new(&rem[lits..])));
                 Self::LeadingDoubleStar { rneedle, child }
             } else {
@@ -130,7 +131,7 @@ impl FinderInner {
                 );
                 let pref = &pattern[..star2_idx];
                 let st = pref.rfind(META).map(|i| i + 1).unwrap_or(0);
-                let needle = (&pref[st..]).to_owned().into_boxed_str();
+                let needle = pref[st..].to_owned().into_boxed_str();
                 let left_child = Box::new(Self::new(&pref[..st]));
                 let right_child = Box::new(Self::new(&pattern[star2_idx..]));
                 Self::MidDoubleStar {
