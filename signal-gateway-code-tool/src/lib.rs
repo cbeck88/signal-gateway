@@ -3,37 +3,21 @@
 //! This crate provides tools for browsing application source code by downloading
 //! tarballs from GitHub and caching them in memory.
 
+mod cached;
 mod config;
 
 pub use config::{CodeToolConfig, GitHubRepo, Source};
 
+use cached::CachedTarball;
+
 use async_trait::async_trait;
-use flate2::read::GzDecoder;
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use regex::Regex;
 use serde::Deserialize;
 use signal_gateway_assistant::{Tool, ToolExecutor, ToolResult};
-use std::{
-    collections::HashMap, error::Error, fmt::Write, future::Future, io::Read, pin::Pin, sync::Arc,
-};
-use tar::Archive;
+use std::{error::Error, fmt::Write, future::Future, pin::Pin, sync::Arc};
 use tokio::sync::{Mutex, MutexGuard};
 use tracing::{error, info, warn};
-
-/// A file stored in memory from the tarball.
-#[derive(Debug, Clone)]
-struct CachedFile {
-    /// The file contents as a string (lossy UTF-8 conversion).
-    content: String,
-}
-
-/// Cached tarball contents.
-struct CachedTarball {
-    /// The git SHA this tarball corresponds to.
-    sha: String,
-    /// Map from file path to file contents.
-    files: HashMap<String, CachedFile>,
-}
 
 /// Callback type for getting the current deployed git SHA.
 ///
@@ -60,10 +44,9 @@ enum ResolvedSource {
 ///
 /// Downloads and caches GitHub tarballs for browsing application source code.
 pub struct CodeTool {
-    name: String,
+    config: CodeToolConfig,
     source: ResolvedSource,
     glob_filter: Option<GlobSet>,
-    include_non_utf8: bool,
     get_sha: ShaCallback,
     client: reqwest::Client,
     cache: Mutex<Option<CachedTarball>>,
@@ -76,19 +59,19 @@ impl CodeTool {
     /// For GitHub sources, this is the commit SHA. For file sources, this can be
     /// used to track file modification (e.g., mtime or a version string).
     pub fn new(config: CodeToolConfig, get_sha: ShaCallback) -> Result<Self, std::io::Error> {
-        let source = match config.source {
+        let source = match &config.source {
             Source::GitHub { repo, token_file } => {
                 let token = token_file
                     .as_ref()
                     .map(|path| std::fs::read_to_string(path).map(|s| s.trim().to_string()))
                     .transpose()?;
                 ResolvedSource::GitHub {
-                    owner: repo.owner,
-                    repo: repo.repo,
+                    owner: repo.owner.clone(),
+                    repo: repo.repo.clone(),
                     token,
                 }
             }
-            Source::File { path } => ResolvedSource::File { path },
+            Source::File { path } => ResolvedSource::File { path: path.clone() },
         };
 
         // Compile glob patterns if any are specified
@@ -109,10 +92,9 @@ impl CodeTool {
             };
 
         Ok(Self {
-            name: config.name,
+            config,
             source,
             glob_filter,
-            include_non_utf8: config.include_non_utf8,
             get_sha,
             client: reqwest::Client::new(),
             cache: Mutex::new(None),
@@ -121,7 +103,7 @@ impl CodeTool {
 
     /// Get the application name.
     pub fn name(&self) -> &str {
-        &self.name
+        &self.config.name
     }
 
     /// Get the current tarball, downloading or reading from file as needed.
@@ -139,7 +121,7 @@ impl CodeTool {
         let current_sha = match (self.get_sha)().await {
             Ok(sha) => sha,
             Err(e) => {
-                warn!("Failed to get current SHA for {}: {e}", self.name);
+                warn!("Failed to get current SHA for {}: {e}", self.config.name);
                 return self.cache.lock().await;
             }
         };
@@ -156,28 +138,32 @@ impl CodeTool {
         };
 
         if needs_refresh {
-            info!("Loading tarball for {} at {}", self.name, current_sha);
+            info!(
+                "Loading tarball for {} at {}",
+                self.config.name, current_sha
+            );
 
             let tarball = match self.load_tarball(&current_sha).await {
                 Ok(t) => t,
                 Err(e) => {
-                    error!("Failed to load tarball for {}: {e}", self.name);
+                    error!("Failed to load tarball for {}: {e}", self.config.name);
                     return cache;
                 }
             };
 
-            let files = match self.extract_tarball(&tarball) {
-                Ok(f) => f,
+            match CachedTarball::extract(
+                current_sha,
+                &tarball,
+                self.glob_filter.as_ref(),
+                self.config.include_non_utf8,
+            ) {
+                Ok(cached_tarball) => {
+                    *cache = Some(cached_tarball);
+                }
                 Err(e) => {
-                    error!("Failed to extract tarball for {}: {e}", self.name);
-                    return cache;
+                    error!("Failed to extract tarball for {}: {e}", self.config.name);
                 }
             };
-
-            *cache = Some(CachedTarball {
-                sha: current_sha,
-                files,
-            });
         }
 
         cache
@@ -237,72 +223,6 @@ impl CodeTool {
             .await
             .map(|b| b.to_vec())
             .map_err(|e| format!("Failed to read response body: {e}"))
-    }
-
-    /// Extract a tarball into a map of file paths to contents.
-    fn extract_tarball(&self, tarball: &[u8]) -> Result<HashMap<String, CachedFile>, String> {
-        let decoder = GzDecoder::new(tarball);
-        let mut archive = Archive::new(decoder);
-
-        let mut files = HashMap::new();
-
-        for entry in archive
-            .entries()
-            .map_err(|e| format!("Failed to read tarball: {e}"))?
-        {
-            let mut entry = entry.map_err(|e| format!("Failed to read entry: {e}"))?;
-
-            // Skip directories
-            if entry.header().entry_type().is_dir() {
-                continue;
-            }
-
-            let path = entry
-                .path()
-                .map_err(|e| format!("Failed to get path: {e}"))?
-                .to_string_lossy()
-                .to_string();
-
-            // GitHub tarballs have a prefix like "owner-repo-sha/"
-            // Strip the first component
-            let path = path.split('/').skip(1).collect::<Vec<_>>().join("/");
-
-            if path.is_empty() {
-                continue;
-            }
-
-            // Apply glob filter if configured
-            if let Some(ref glob_filter) = self.glob_filter {
-                if !glob_filter.is_match(&path) {
-                    continue;
-                }
-            }
-
-            // Read file contents
-            let mut contents = Vec::new();
-            if entry.read_to_end(&mut contents).is_err() {
-                continue; // Skip files we can't read
-            }
-
-            // Convert to string, handling non-UTF-8 based on config
-            let content = match String::from_utf8(contents) {
-                Ok(s) => s,
-                Err(e) => {
-                    if self.include_non_utf8 {
-                        // Use lossy conversion if configured to include non-UTF-8
-                        String::from_utf8_lossy(e.as_bytes()).into_owned()
-                    } else {
-                        // Skip non-UTF-8 files by default
-                        continue;
-                    }
-                }
-            };
-
-            files.insert(path, CachedFile { content });
-        }
-
-        info!("Extracted {} files from tarball", files.len());
-        Ok(files)
     }
 
     /// List files in a directory (like `ls`).
@@ -463,7 +383,7 @@ impl CodeTool {
             }
 
             // Skip binary-looking files
-            if looks_binary(&file.content) {
+            if file.is_binary {
                 continue;
             }
 
@@ -546,17 +466,6 @@ impl CodeTool {
             ))
         }
     }
-}
-
-/// Check if content looks like binary data.
-fn looks_binary(content: &str) -> bool {
-    // Check first 1000 chars for null bytes or high ratio of non-printable chars
-    let sample: String = content.chars().take(1000).collect();
-    let non_printable = sample
-        .chars()
-        .filter(|c| !c.is_ascii_graphic() && !c.is_ascii_whitespace())
-        .count();
-    non_printable > sample.len() / 10
 }
 
 /// Tool executor for multiple application source code browsers.
