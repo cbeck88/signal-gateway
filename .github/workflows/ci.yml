@@ -127,8 +127,10 @@ jobs:
       run: cargo clippy --all --all-features -- -D warnings
 
   # Semver compatibility checks
+  # Note: This will fail until crates are published to crates.io
   semver-checks:
     runs-on: ubuntu-latest
+    continue-on-error: true
 
     steps:
       - name: Checkout
