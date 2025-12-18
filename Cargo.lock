@@ -1887,23 +1887,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "signal-gateway-app-code"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "flate2",
- "globset",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "signal-gateway-assistant",
- "tar",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "signal-gateway-assistant"
 version = "0.1.0"
 dependencies = [
@@ -1951,9 +1934,9 @@ dependencies = [
  "serde",
  "serde_json",
  "signal-gateway",
- "signal-gateway-app-code",
  "signal-gateway-assistant-claude",
  "signal-gateway-log-ingest",
+ "signal-gateway-repo-code",
  "tokio",
  "tokio-util",
  "toml",
@@ -1973,6 +1956,23 @@ dependencies = [
  "serde_json",
  "signal-gateway",
  "syslog_rfc5424",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "signal-gateway-repo-code"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "flate2",
+ "globset",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "signal-gateway-assistant",
+ "tar",
  "tokio",
  "tracing",
 ]

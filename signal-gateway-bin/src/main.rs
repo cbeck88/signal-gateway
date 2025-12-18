@@ -5,8 +5,8 @@
 use conf::Conf;
 use metrics_exporter_prometheus::PrometheusBuilder;
 use signal_gateway::{CommandRouter, Gateway, GatewayConfig, Handling};
-use signal_gateway_app_code::AppCodeTools;
 use signal_gateway_assistant_claude::{ClaudeAssistant, ClaudeConfig};
+use signal_gateway_repo_code::RepoCodeTools;
 use std::{env, fs, net::SocketAddr, path::PathBuf, sync::Arc};
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
@@ -16,8 +16,8 @@ use tracing_subscriber::EnvFilter;
 mod admin_http;
 use admin_http::AdminHttpConfig;
 
-mod app_code;
-use app_code::AppCodeConfigExt;
+mod repo_code;
+use repo_code::RepoCodeConfigExt;
 
 mod listen_http;
 use listen_http::start_http_task;
@@ -51,7 +51,7 @@ pub struct Config {
     admin_http: Option<AdminHttpConfig>,
     /// Application source code configurations for Claude tools.
     #[conf(long, env, value_parser = serde_json::from_str, default, default_help_str = "[]")]
-    app_code: Vec<AppCodeConfigExt>,
+    app_code: Vec<RepoCodeConfigExt>,
     /// Claude API configuration for AI-powered responses.
     #[conf(flatten, prefix)]
     claude: Option<ClaudeConfig>,
@@ -150,7 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         router_builder.build()
     };
 
-    // Build AppCode tools if configured
+    // Build RepoCode tools if configured
     let app_code_tools = if !config.app_code.is_empty() {
         let mut apps = Vec::new();
         for app_config in config.app_code {
@@ -163,7 +163,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
         }
-        Some(Arc::new(AppCodeTools::new(apps)))
+        Some(Arc::new(RepoCodeTools::new(apps)))
     } else {
         None
     };

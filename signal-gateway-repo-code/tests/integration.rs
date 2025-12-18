@@ -1,9 +1,9 @@
-//! Integration tests for signal-gateway-app-code.
+//! Integration tests for signal-gateway-repo-code.
 //!
 //! These tests exercise the GitHub tarball download and file browsing functionality
 //! against a real public repository at a pinned commit.
 
-use signal_gateway_app_code::{AppCode, AppCodeConfig, GitHubRepo, ShaCallback};
+use signal_gateway_repo_code::{GitHubRepo, RepoCode, RepoCodeConfig, ShaCallback};
 use std::sync::Arc;
 
 /// Test against cbeck88/ver-stub-rs at a known commit.
@@ -12,12 +12,12 @@ const TEST_OWNER: &str = "cbeck88";
 const TEST_REPO: &str = "ver-stub-rs";
 const TEST_SHA: &str = "79b98e25f27ae4f5dd73a5a3d8f37dad655a57e8";
 
-fn create_test_app_code() -> AppCode {
+fn create_test_app_code() -> RepoCode {
     create_test_app_code_with_glob(vec![])
 }
 
-fn create_test_app_code_with_glob(glob: Vec<String>) -> AppCode {
-    let config = AppCodeConfig {
+fn create_test_app_code_with_glob(glob: Vec<String>) -> RepoCode {
+    let config = RepoCodeConfig {
         name: "test-app".to_string(),
         github: GitHubRepo {
             owner: TEST_OWNER.to_string(),
@@ -34,7 +34,7 @@ fn create_test_app_code_with_glob(glob: Vec<String>) -> AppCode {
         Box::pin(async move { Ok(sha) })
     });
 
-    AppCode::new(config, sha_callback).expect("Failed to create AppCode")
+    RepoCode::new(config, sha_callback).expect("Failed to create RepoCode")
 }
 
 #[tokio::test]
@@ -46,8 +46,14 @@ async fn test_ls_root() {
     // Verify expected top-level entries exist
     assert!(result.contains("Cargo.toml"), "Should contain Cargo.toml");
     assert!(result.contains("README.md"), "Should contain README.md");
-    assert!(result.contains("ver-stub/"), "Should contain ver-stub/ directory");
-    assert!(result.contains("ver-stub-build/"), "Should contain ver-stub-build/ directory");
+    assert!(
+        result.contains("ver-stub/"),
+        "Should contain ver-stub/ directory"
+    );
+    assert!(
+        result.contains("ver-stub-build/"),
+        "Should contain ver-stub-build/ directory"
+    );
     assert!(result.contains("tests.sh"), "Should contain tests.sh");
 }
 
@@ -69,30 +75,48 @@ async fn test_find_rust_files() {
     let result = app.find(Some("*.rs")).await.expect("find failed");
 
     // Should find Rust source files
-    assert!(result.contains("ver-stub/src/lib.rs"), "Should find ver-stub/src/lib.rs");
-    assert!(result.contains("ver-stub-build/src/lib.rs"), "Should find ver-stub-build/src/lib.rs");
+    assert!(
+        result.contains("ver-stub/src/lib.rs"),
+        "Should find ver-stub/src/lib.rs"
+    );
+    assert!(
+        result.contains("ver-stub-build/src/lib.rs"),
+        "Should find ver-stub-build/src/lib.rs"
+    );
 }
 
 #[tokio::test]
 async fn test_find_with_path_pattern() {
     let app = create_test_app_code();
 
-    let result = app.find(Some("ver-stub-build/src/*.rs")).await.expect("find failed");
+    let result = app
+        .find(Some("ver-stub-build/src/*.rs"))
+        .await
+        .expect("find failed");
 
     // Should find files in ver-stub-build/src/
-    assert!(result.contains("ver-stub-build/src/lib.rs"), "Should find lib.rs");
+    assert!(
+        result.contains("ver-stub-build/src/lib.rs"),
+        "Should find lib.rs"
+    );
 }
 
 #[tokio::test]
 async fn test_read_cargo_toml() {
     let app = create_test_app_code();
 
-    let result = app.read("Cargo.toml", None, None).await.expect("read failed");
+    let result = app
+        .read("Cargo.toml", None, None)
+        .await
+        .expect("read failed");
 
     // Verify content matches what we know is in the file
     assert!(result.contains("[workspace]"), "Should contain [workspace]");
     assert!(result.contains("ver-stub"), "Should contain ver-stub");
-    assert!(result.contains("ver-stub-build"), "Should contain ver-stub-build");
+    assert!(
+        result.contains("ver-stub-build"),
+        "Should contain ver-stub-build"
+    );
 }
 
 #[tokio::test]
@@ -100,14 +124,20 @@ async fn test_read_with_line_range() {
     let app = create_test_app_code();
 
     // Read just the first 5 lines
-    let result = app.read("Cargo.toml", Some(1), Some(5)).await.expect("read failed");
+    let result = app
+        .read("Cargo.toml", Some(1), Some(5))
+        .await
+        .expect("read failed");
 
     // Should only have 5 lines
     let line_count = result.lines().count();
     assert_eq!(line_count, 5, "Should have exactly 5 lines");
 
     // First line should be [workspace]
-    assert!(result.contains("[workspace]"), "First lines should contain [workspace]");
+    assert!(
+        result.contains("[workspace]"),
+        "First lines should contain [workspace]"
+    );
 }
 
 #[tokio::test]
@@ -127,22 +157,37 @@ async fn test_read_nonexistent_file() {
 async fn test_search_simple() {
     let app = create_test_app_code();
 
-    let result = app.search("workspace", 0, None).await.expect("search failed");
+    let result = app
+        .search("workspace", 0, None)
+        .await
+        .expect("search failed");
 
     // Should find "workspace" in Cargo.toml
-    assert!(result.contains("Cargo.toml"), "Should find match in Cargo.toml");
+    assert!(
+        result.contains("Cargo.toml"),
+        "Should find match in Cargo.toml"
+    );
 }
 
 #[tokio::test]
 async fn test_search_with_context() {
     let app = create_test_app_code();
 
-    let result = app.search("resolver", 2, None).await.expect("search failed");
+    let result = app
+        .search("resolver", 2, None)
+        .await
+        .expect("search failed");
 
     // Should have context lines around the match
-    assert!(result.contains("Cargo.toml"), "Should find match in Cargo.toml");
+    assert!(
+        result.contains("Cargo.toml"),
+        "Should find match in Cargo.toml"
+    );
     // With context, should see surrounding lines
-    assert!(result.contains("[workspace]"), "Should show context including [workspace]");
+    assert!(
+        result.contains("[workspace]"),
+        "Should show context including [workspace]"
+    );
 }
 
 #[tokio::test]
@@ -191,8 +236,14 @@ async fn test_glob_filter_rust_files_only() {
     assert!(result.contains(".rs"), "Should contain .rs files");
 
     // Should NOT find non-Rust files
-    assert!(!result.contains("Cargo.toml"), "Should not contain Cargo.toml");
-    assert!(!result.contains("README.md"), "Should not contain README.md");
+    assert!(
+        !result.contains("Cargo.toml"),
+        "Should not contain Cargo.toml"
+    );
+    assert!(
+        !result.contains("README.md"),
+        "Should not contain README.md"
+    );
     assert!(!result.contains("tests.sh"), "Should not contain tests.sh");
 }
 
@@ -214,16 +265,16 @@ async fn test_glob_filter_specific_directory() {
         !result.contains("ver-stub-build/"),
         "Should not contain ver-stub-build files"
     );
-    assert!(!result.contains("Cargo.toml"), "Should not contain root Cargo.toml");
+    assert!(
+        !result.contains("Cargo.toml"),
+        "Should not contain root Cargo.toml"
+    );
 }
 
 #[tokio::test]
 async fn test_glob_filter_multiple_patterns() {
     // Include both Cargo.toml files and shell scripts
-    let app = create_test_app_code_with_glob(vec![
-        "**/Cargo.toml".to_string(),
-        "*.sh".to_string(),
-    ]);
+    let app = create_test_app_code_with_glob(vec!["**/Cargo.toml".to_string(), "*.sh".to_string()]);
 
     let result = app.find(Some("*")).await.expect("find failed");
 
@@ -234,7 +285,10 @@ async fn test_glob_filter_multiple_patterns() {
     assert!(result.contains("tests.sh"), "Should contain tests.sh");
 
     // Should NOT find other files
-    assert!(!result.contains("README.md"), "Should not contain README.md");
+    assert!(
+        !result.contains("README.md"),
+        "Should not contain README.md"
+    );
     assert!(!result.contains(".rs"), "Should not contain .rs files");
 }
 

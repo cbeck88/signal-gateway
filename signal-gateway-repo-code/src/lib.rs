@@ -55,7 +55,7 @@ impl TryFrom<String> for GitHubRepo {
 
 /// Configuration for an application's source code access.
 #[derive(Clone, Debug, Deserialize)]
-pub struct AppCodeConfig {
+pub struct RepoCodeConfig {
     /// Name of the application (used to identify it in tool calls).
     pub name: String,
     /// GitHub repository in "owner/repo" format.
@@ -101,8 +101,8 @@ pub type ShaCallback = Arc<
 /// Application source code browser.
 ///
 /// Downloads and caches GitHub tarballs for browsing application source code.
-pub struct AppCode {
-    config: AppCodeConfig,
+pub struct RepoCode {
+    config: RepoCodeConfig,
     token: Option<String>,
     glob_filter: Option<GlobSet>,
     get_sha: ShaCallback,
@@ -110,12 +110,12 @@ pub struct AppCode {
     cache: Mutex<Option<CachedTarball>>,
 }
 
-impl AppCode {
-    /// Create a new AppCode instance from configuration.
+impl RepoCode {
+    /// Create a new RepoCode instance from configuration.
     ///
     /// The `get_sha` callback is called to determine which git SHA to download.
     /// It should return `None` if the SHA is not yet known.
-    pub fn new(config: AppCodeConfig, get_sha: ShaCallback) -> Result<Self, std::io::Error> {
+    pub fn new(config: RepoCodeConfig, get_sha: ShaCallback) -> Result<Self, std::io::Error> {
         let token = config
             .token_file
             .as_ref()
@@ -123,20 +123,21 @@ impl AppCode {
             .transpose()?;
 
         // Compile glob patterns if any are specified
-        let glob_filter = if config.glob.is_empty() {
-            None
-        } else {
-            let mut builder = GlobSetBuilder::new();
-            for pattern in &config.glob {
-                let glob = Glob::new(pattern).map_err(|e| {
-                    std::io::Error::other(format!("invalid glob pattern '{}': {}", pattern, e))
-                })?;
-                builder.add(glob);
-            }
-            Some(builder.build().map_err(|e| {
-                std::io::Error::other(format!("failed to build glob set: {}", e))
-            })?)
-        };
+        let glob_filter =
+            if config.glob.is_empty() {
+                None
+            } else {
+                let mut builder = GlobSetBuilder::new();
+                for pattern in &config.glob {
+                    let glob = Glob::new(pattern).map_err(|e| {
+                        std::io::Error::other(format!("invalid glob pattern '{}': {}", pattern, e))
+                    })?;
+                    builder.add(glob);
+                }
+                Some(builder.build().map_err(|e| {
+                    std::io::Error::other(format!("failed to build glob set: {}", e))
+                })?)
+            };
 
         Ok(Self {
             config,
@@ -589,18 +590,18 @@ fn looks_binary(content: &str) -> bool {
 }
 
 /// Tool executor for multiple application source code browsers.
-pub struct AppCodeTools {
-    apps: Vec<AppCode>,
+pub struct RepoCodeTools {
+    apps: Vec<RepoCode>,
 }
 
-impl AppCodeTools {
-    /// Create a new AppCodeTools instance.
-    pub fn new(apps: Vec<AppCode>) -> Self {
+impl RepoCodeTools {
+    /// Create a new RepoCodeTools instance.
+    pub fn new(apps: Vec<RepoCode>) -> Self {
         Self { apps }
     }
 
     /// Find an app by name.
-    fn find_app(&self, name: &str) -> Option<&AppCode> {
+    fn find_app(&self, name: &str) -> Option<&RepoCode> {
         self.apps.iter().find(|app| app.name() == name)
     }
 
@@ -644,7 +645,7 @@ struct SearchInput {
 }
 
 #[async_trait]
-impl ToolExecutor for AppCodeTools {
+impl ToolExecutor for RepoCodeTools {
     fn tools(&self) -> Vec<Tool> {
         vec![
             Tool {

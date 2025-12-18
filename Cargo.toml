@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "prometheus-http-client",
     "signal-gateway",
-    "signal-gateway-app-code",
+    "signal-gateway-repo-code",
     "signal-gateway-assistant",
     "signal-gateway-assistant/claude",
     "signal-gateway-bin",
