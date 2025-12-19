@@ -16,3 +16,6 @@ pub use rpc::{
     RpcClientError, SignalMessage, TrustLevel, connect_ipc, connect_tcp,
 };
 pub use trust_set::{SafetyNumber, SignalTrustSet, Uuid};
+
+/// A subscription to Signal messages from `subscribe_receive`.
+pub type Subscription = jsonrpsee::core::client::Subscription<RecvMessage>;
