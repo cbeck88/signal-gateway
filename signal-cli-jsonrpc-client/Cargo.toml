@@ -1,6 +1,6 @@
 [package]
 name = "signal-cli-jsonrpc-client"
-version = "0.1.0"
+version = "0.1.1"
 description = "JSON-RPC client for signal-cli daemon"
 keywords = ["signal", "jsonrpc", "messaging"]
 categories = ["network-programming"]
